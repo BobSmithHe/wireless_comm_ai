@@ -1,0 +1,25 @@
+import redis.asyncio as aioredis
+from ..config.settings import get_settings
+
+settings = get_settings()
+_redis_pool: aioredis.Redis | None = None
+
+
+async def get_redis() -> aioredis.Redis:
+    global _redis_pool
+    if _redis_pool is None:
+        _redis_pool = aioredis.Redis(
+            host=settings.redis_host,
+            port=settings.redis_port,
+            password=settings.redis_password or None,
+            db=settings.redis_db,
+            decode_responses=True,
+        )
+    return _redis_pool
+
+
+async def close_redis() -> None:
+    global _redis_pool
+    if _redis_pool:
+        await _redis_pool.close()
+        _redis_pool = None

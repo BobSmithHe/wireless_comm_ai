@@ -1,0 +1,10 @@
+__pycache__
+*.pyc
+.env
+.env.local
+data/chroma/
+data/memory/
+*.egg-info
+.git
+tests/
+scripts/

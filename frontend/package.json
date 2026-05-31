@@ -1,0 +1,25 @@
+{
+  "name": "wireless-comm-ai-frontend",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "serve": "vue-cli-service serve",
+    "build": "vue-cli-service build"
+  },
+  "dependencies": {
+    "@element-plus/icons-vue": "^2.3.0",
+    "axios": "^1.7.0",
+    "element-plus": "^2.5.0",
+    "highlight.js": "^11.9.0",
+    "katex": "^0.17.0",
+    "marked": "^12.0.0",
+    "pinia": "^2.1.0",
+    "vue": "^3.4.0",
+    "vue-router": "^4.3.0"
+  },
+  "devDependencies": {
+    "@vue/cli-plugin-babel": "^5.0.0",
+    "@vue/cli-plugin-router": "^5.0.0",
+    "@vue/cli-service": "^5.0.0"
+  }
+}
