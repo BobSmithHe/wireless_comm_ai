@@ -1,16 +1,18 @@
 """
-Knowledge Base — hybrid retrieval (BM25 + vector → RRF → LLM rerank → pack).
+Knowledge Base — wraps SmartMarkdownSplitter + Milvus hybrid search.
 """
 from __future__ import annotations
 
+import json
 import uuid
 from dataclasses import dataclass
 
-import chromadb
-from chromadb.config import Settings as ChromaSettings
+from pymilvus import MilvusClient
 
+from .md_splitter import SmartMarkdownSplitter
+from .milvus_store import init_collection, insert_chunks, COLLECTION_NAME
+from .rag_search import search_dense, search_sparse, search_hybrid, llm_rerank, get_full_by_title_path
 from ..observability import observe
-from ...config.settings import get_settings as _get_settings
 
 
 @dataclass
@@ -24,72 +26,69 @@ class RetrievedDoc:
 class KnowledgeBase:
     def __init__(
         self,
+        *,
         llm_client=None,
-        persist_dir: str = "./data/chroma",
-        chroma_host: str | None = None,
-        chroma_port: int = 8000,
+        milvus_uri: str = "./data/milvus.db",
+        milvus_token: str = "",
+        milvus_db_name: str = "",
+        embedding_model: str = "BAAI/bge-large-zh-v1.5",
+        embedding_dimension: int = 1024,
+        embedding_device: str = "cpu",
     ):
-        self.persist_dir = persist_dir
-        self.chroma_host = chroma_host
-        self.chroma_port = chroma_port
         self.llm = llm_client
-        self._embedder = None
-        self._client: chromadb.ClientAPI | None = None
-        self._col: chromadb.Collection | None = None
-        self._bm25_ready = False
-
-    def _get_embedder(self):
-        if self._embedder is None:
-            from sentence_transformers import SentenceTransformer
-            self._embedder = SentenceTransformer("all-MiniLM-L6-v2")
-        return self._embedder
-
-    def _ensure_client(self):
-        if self._client is not None:
-            return
-        if self.chroma_host:
-            self._client = chromadb.HttpClient(
-                host=self.chroma_host, port=self.chroma_port,
-                settings=ChromaSettings(anonymized_telemetry=False),
-            )
-        else:
-            self._client = chromadb.PersistentClient(
-                path=self.persist_dir,
-                settings=ChromaSettings(anonymized_telemetry=False),
-            )
-        self._col = self._client.get_or_create_collection(
-            name="knowledge_base",
-            metadata={"hnsw:space": "cosine"},
+        self.milvus_uri = milvus_uri
+        self.milvus_token = milvus_token
+        self.milvus_db_name = milvus_db_name
+        self.embedding_model = embedding_model
+        self.embedding_dimension = embedding_dimension
+        self.embedding_device = embedding_device
+        self._client: MilvusClient | None = None
+        self._ready = False
+        self._splitter = SmartMarkdownSplitter(
+            chunk_size=800, chunk_overlap=150, max_chunk_size=1800,
         )
 
-    def _embed(self, texts: list[str]) -> list[list[float]]:
-        model = self._get_embedder()
-        vecs = model.encode(texts, batch_size=32, show_progress_bar=False)
-        return [v.tolist() for v in vecs]
+    def _get_client(self) -> MilvusClient:
+        if self._client is None:
+            kwargs = {"uri": self.milvus_uri}
+            if self.milvus_token:
+                kwargs["token"] = self.milvus_token
+            if self.milvus_db_name:
+                kwargs["db_name"] = self.milvus_db_name
+            self._client = MilvusClient(**kwargs)
+        return self._client
+
+    def _ensure_collection(self):
+        if self._ready:
+            return
+        init_collection(self._get_client())
+        self._ready = True
 
     # ------------------------------------------------------------------
     # CRUD
     # ------------------------------------------------------------------
 
     def add_document(self, text: str, metadata: dict | None = None) -> str:
-        self._ensure_client()
-        doc_id = uuid.uuid4().hex[:16]
-        emb = self._embed([text])
-        self._col.add(ids=[doc_id], documents=[text], metadatas=[metadata or {}], embeddings=emb)
-        self._bm25_ready = False
-        return doc_id
+        return self.add_documents([text], [metadata or {}])[0]
 
     def add_documents(self, texts: list[str], metadatas: list[dict] | None = None) -> list[str]:
-        self._ensure_client()
-        ids = [uuid.uuid4().hex[:16] for _ in texts]
+        self._ensure_collection()
         metas = metadatas if metadatas else [{}] * len(texts)
-        embs = self._embed(texts)
-        self._col.add(ids=ids, documents=texts, metadatas=metas, embeddings=embs)
-        self._bm25_ready = False
+        ids = []
+        for i, text in enumerate(texts):
+            chunks = self._splitter.split_text(text)
+            src = metas[i].get("source", f"doc_{uuid.uuid4().hex[:8]}")
+            for ck in chunks:
+                ck.metadata["doc_source"] = src
+                ck.metadata["category"] = metas[i].get("category", "")
+                ck.metadata.setdefault("parent_title_key", "")
+            if chunks:
+                insert_chunks(self._get_client(), chunks, src)
+                ids.extend([ck.chunk_id for ck in chunks])
         return ids
 
     # ------------------------------------------------------------------
-    # Hybrid search
+    # Search
     # ------------------------------------------------------------------
 
     @observe(as_type="retriever")
@@ -102,161 +101,78 @@ class KnowledgeBase:
         rerank: bool = True,
         context_budget: int | None = None,
     ) -> list[RetrievedDoc]:
-        """Hybrid retrieval: BM25 + vector → RRF → LLM rerank → context pack.
-
-        Args:
-            query: search query
-            top_k: number of final results
-            filters: ChromaDB metadata filter, e.g. {'category': 'algorithms'}
-            mode: 'hybrid' | 'vector' | 'bm25'
-            rerank: whether to use LLM reranking
-            context_budget: max tokens for packed context (None → no packing)
-        """
-        import asyncio
-        from .retrieval import (
-            BM25Index, reciprocal_rank_fusion, rerank_with_llm, pack_context,
-        )
-
-        self._ensure_client()
-        if self._col.count() == 0:
+        self._ensure_collection()
+        client = self._get_client()
+        stats = client.get_collection_stats(COLLECTION_NAME)
+        if stats["row_count"] == 0:
             return []
 
-        settings = _get_settings()
-        if context_budget is None:
-            context_budget = getattr(settings, 'kb_context_budget_tokens', 2000)
-
-        # Build where clause for ChromaDB
-        where = filters or None
-
-        # --- Vector search ---
-        model = self._get_embedder()
-        q_emb = await asyncio.to_thread(model.encode, [query], show_progress_bar=False, batch_size=1)
-
         n_candidates = max(top_k * 4, 20)
-        results = self._col.query(
-            query_embeddings=[q_emb[0].tolist()],
-            n_results=n_candidates,
-            where=where,
-            include=["documents", "metadatas", "distances"],
-        )
-        vector_hits = self._parse_results(results)
 
         if mode == "vector":
-            final = vector_hits[:top_k]
-            if context_budget:
-                final = pack_context(final, context_budget)
-            return final
+            hits = search_dense(client, query, topk=top_k)
+        elif mode == "bm25":
+            hits = search_sparse(client, query, topk=top_k)
+        else:
+            hits = search_hybrid(client, query, topk=n_candidates)
+            if rerank and len(hits) > top_k:
+                hits = llm_rerank(query, hits, min(len(hits), n_candidates))
+            hits = hits[:top_k]
 
-        # --- BM25 search ---
-        all_docs = self._col.get(include=["documents", "metadatas"])
-        all_texts = all_docs["documents"] or []
-        bm25 = BM25Index()
-        bm25.build(all_texts)
-        bm25_hits = bm25.search(query, top_k=n_candidates)
-        bm25_scored: list[tuple[int, float]] = [(i, s) for i, s in bm25_hits]
+        expanded: list[RetrievedDoc] = []
+        seen_titles: set[str] = set()
+        for h in hits:
+            entity = h.get("entity", h)
+            title_key = entity.get("parent_title_key", "")
+            content = entity.get("content", "")
+            doc_source = entity.get("doc_source", "")
+            score = h.get("llm_score", h.get("rrf_score", h.get("distance", 0)))
 
-        if mode == "bm25":
-            final = []
-            for idx, score in bm25_scored[:top_k]:
-                meta = (all_docs["metadatas"] or [{}])[idx] if idx < len(all_docs["metadatas"] or []) else {}
-                final.append(RetrievedDoc(
-                    content=all_texts[idx],
-                    score=round(score, 4),
-                    source=meta.get("source", ""),
-                    chunk_index=idx,
-                ))
-            if context_budget:
-                final = pack_context(final, context_budget)
-            return final
+            if not title_key:
+                if content:
+                    expanded.append(RetrievedDoc(content=content, score=round(score, 4), source=doc_source))
+                continue
 
-        # --- Hybrid: RRF fusion ---
-        fused = reciprocal_rank_fusion(bm25_scored, vector_hits, top_k=n_candidates)
-        candidates: list[RetrievedDoc] = []
-        for idx, score in fused:
-            if idx < len(all_texts):
-                meta = (all_docs["metadatas"] or [{}])[idx] if idx < len(all_docs["metadatas"] or []) else {}
-                candidates.append(RetrievedDoc(
-                    content=all_texts[idx],
-                    score=round(score, 4),
-                    source=meta.get("source", ""),
-                    chunk_index=idx,
-                ))
+            if title_key in seen_titles:
+                continue
+            seen_titles.add(title_key)
 
-        # --- LLM Rerank ---
-        if rerank and self.llm and len(candidates) > top_k:
-            llm_candidates = [(d.chunk_index, d.content) for d in candidates]
-            kept = await rerank_with_llm(self.llm, query, llm_candidates, top_k=top_k * 2)
-            keep_set = set(kept)
-            candidates = [d for d in candidates if d.chunk_index in keep_set]
+            full_text = get_full_by_title_path(client, title_key)
+            expanded.append(RetrievedDoc(
+                content=full_text,
+                score=round(score, 4) if isinstance(score, (int, float)) else 0.6,
+                source=doc_source,
+            ))
 
-        # --- Context pack ---
-        if context_budget:
-            candidates = pack_context(candidates, context_budget)
-
-        return candidates[:top_k]
+        return expanded
 
     # ------------------------------------------------------------------
-    # Document management
+    # Management
     # ------------------------------------------------------------------
 
     def list_documents(self) -> list[dict]:
-        self._ensure_client()
-        if self._col.count() == 0:
-            return []
-        all_meta = self._col.get(include=["metadatas"])
-        seen: dict[str, dict] = {}
-        for meta in (all_meta["metadatas"] or []):
-            if not meta:
-                continue
-            source = meta.get("source", "")
-            if not source:
-                continue
-            page = meta.get("page", [])
-            if isinstance(page, int):
-                page = [page]
-            if source not in seen:
-                seen[source] = {"chunk_count": 1, "pages": set(page)}
-            else:
-                seen[source]["chunk_count"] += 1
-                seen[source]["pages"].update(page)
-        return [
-            {"source": s, "chunks": info["chunk_count"], "pages": sorted(info["pages"]) if info["pages"] else []}
-            for s, info in seen.items()
-        ]
+        self._ensure_collection()
+        results = self._get_client().query(
+            collection_name=COLLECTION_NAME, filter="",
+            output_fields=["doc_source"], limit=50000,
+        )
+        seen: dict[str, int] = {}
+        for r in results:
+            src = r.get("doc_source", "")
+            if src:
+                seen[src] = seen.get(src, 0) + 1
+        return [{"source": s, "chunks": c} for s, c in seen.items()]
 
     def remove_document(self, source: str) -> int:
-        self._ensure_client()
-        before = self._col.count()
-        self._col.delete(where={"source": source})
-        return before - self._col.count()
+        self._ensure_collection()
+        client = self._get_client()
+        before = client.get_collection_stats(COLLECTION_NAME)["row_count"]
+        client.delete(collection_name=COLLECTION_NAME, filter=f'doc_source == "{source}"')
+        return before - client.get_collection_stats(COLLECTION_NAME)["row_count"]
 
     def clear(self) -> None:
-        self._ensure_client()
-        self._client.delete_collection("knowledge_base")
-        self._col = self._client.get_or_create_collection(
-            name="knowledge_base", metadata={"hnsw:space": "cosine"},
-        )
+        self._ready = False
 
     def __len__(self) -> int:
-        self._ensure_client()
-        return self._col.count()
-
-    # ------------------------------------------------------------------
-    # Internal
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def _parse_results(results: dict) -> list[RetrievedDoc]:
-        docs = []
-        if results["ids"] and results["ids"][0]:
-            for i in range(len(results["ids"][0])):
-                distance = results["distances"][0][i]
-                score = 1.0 - (distance / 2.0)
-                meta = results["metadatas"][0][i] or {}
-                docs.append(RetrievedDoc(
-                    content=results["documents"][0][i] or "",
-                    score=round(max(0.0, min(1.0, score)), 4),
-                    source=meta.get("source", ""),
-                    chunk_index=meta.get("chunk_index", 0),
-                ))
-        return docs
+        self._ensure_collection()
+        return self._get_client().get_collection_stats(COLLECTION_NAME)["row_count"]

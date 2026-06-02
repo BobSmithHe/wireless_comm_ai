@@ -5,7 +5,7 @@ from functools import lru_cache
 class Settings(BaseSettings):
     app_name: str = "WirelessCommAI"
     app_version: str = "0.1.0"
-    debug: bool = True
+    debug: bool = False
 
     host: str = "0.0.0.0"
     port: int = 8000
@@ -21,9 +21,13 @@ class Settings(BaseSettings):
     redis_password: str = ""
     redis_db: int = 0
 
-    chroma_persist_dir: str = "./data/chroma"
-    chroma_host: str = ""   # empty → local PersistentClient; set → HttpClient(chroma_host, chroma_port)
-    chroma_port: int = 8000
+    milvus_uri: str = "http://localhost:19530"
+    milvus_token: str = ""
+    milvus_db_name: str = "milvus_database"
+
+    embedding_model: str = "BAAI/bge-large-zh-v1.5"
+    embedding_dimension: int = 1024
+    embedding_device: str = "cpu"
 
     deepseek_api_key: str = ""
     deepseek_base_url: str = "https://api.deepseek.com/v1"
@@ -54,10 +58,9 @@ class Settings(BaseSettings):
 
     # ---- Context Compression ----
     context_compression_enabled: bool = True
-    context_compression_budget_tokens: int = 4000
-    context_compression_keep_recent: int = 6
+    context_compression_trigger_rounds: int = 10
+    context_compression_keep_rounds: int = 5
     context_compression_summary_max_tokens: int = 500
-    context_compression_trigger_ratio: float = 0.8
 
     @property
     def database_url(self) -> str:

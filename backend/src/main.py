@@ -22,11 +22,6 @@ async def lifespan(app: FastAPI):
     Base.metadata.create_all(bind=engine)
     logger.info("Database tables verified")
 
-    # Preload knowledge base
-    from .api.dependencies import get_kb
-    kb = get_kb()
-    _preload_knowledge_base(kb)
-
     yield
 
     logger.info(f"Shutting down {settings.app_name}")
@@ -48,16 +43,11 @@ def _preload_knowledge_base(kb) -> None:
                 filepath = os.path.join(root, fname)
                 with open(filepath, "r", encoding="utf-8") as f:
                     content = f.read()
-                chunks = [c.strip() for c in content.split("\n\n") if c.strip() and len(c.strip()) > 50]
-                for chunk in chunks:
-                    kb.add_document(
-                        text=chunk,
-                        metadata={
-                            "source": fname,
-                            "category": os.path.basename(root),
-                        },
-                    )
-                    count += 1
+                ids = kb.add_documents(
+                    texts=[content],
+                    metadatas=[{"source": fname, "category": os.path.basename(root)}],
+                )
+                count += len(ids)
     logger.info(f"Knowledge base loaded: {count} chunks from {data_dir}")
 
 
@@ -69,7 +59,13 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[
+        "http://localhost:5173",
+        "http://localhost:5178",
+        "http://localhost:5179",
+        "http://127.0.0.1:5173",
+        "http://127.0.0.1:5178",
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

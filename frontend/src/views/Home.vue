@@ -28,14 +28,7 @@
     </el-row>
 
     <el-row :gutter="20" style="margin-top: 16px">
-      <el-col :span="8">
-        <el-card shadow="hover" @click="$router.push('/memory')" class="feature-card">
-          <el-icon :size="40" color="#f56c6c"><Clock /></el-icon>
-          <h3>记忆系统</h3>
-          <p>四层金字塔记忆架构：原始对话 → 原子事实 → 场景聚类 → 用户画像</p>
-        </el-card>
-      </el-col>
-      <el-col :span="16">
+      <el-col :span="24">
         <el-card shadow="hover" class="feature-card">
           <h3>支持领域</h3>
           <el-tag v-for="fact in quickFacts" :key="fact" style="margin: 4px">{{ fact }}</el-tag>

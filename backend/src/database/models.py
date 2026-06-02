@@ -59,7 +59,7 @@ class Memory(Base):
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
     layer = Column(Integer, nullable=False, default=1)  # L0=0, L1=1, L2=2, L3=3
     content = Column(Text, nullable=False)
-    embedding_id = Column(String(100))  # ChromaDB embedding reference
+    embedding_id = Column(String(100))  # vector DB embedding reference
     metadata_ = Column("metadata", JSON, default=dict)
     score = Column(Float, default=0.0)
     created_at = Column(DateTime, default=datetime.utcnow)

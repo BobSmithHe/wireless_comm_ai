@@ -46,9 +46,12 @@ def get_kb() -> KnowledgeBase:
     if _kb is None:
         _kb = KnowledgeBase(
             llm_client=get_llm(),
-            persist_dir=_settings.chroma_persist_dir,
-            chroma_host=_settings.chroma_host or None,
-            chroma_port=_settings.chroma_port,
+            milvus_uri=_settings.milvus_uri,
+            milvus_token=_settings.milvus_token or None,
+            milvus_db_name=_settings.milvus_db_name,
+            embedding_model=_settings.embedding_model,
+            embedding_dimension=_settings.embedding_dimension,
+            embedding_device=_settings.embedding_device,
         )
     return _kb
 
@@ -57,9 +60,9 @@ def get_conversation_memory() -> ConversationMemory:
     global _memory
     if _memory is None:
         _memory = ConversationMemory(
-            persist_dir=_settings.chroma_persist_dir,
-            chroma_host=_settings.chroma_host or None,
-            chroma_port=_settings.chroma_port,
+            milvus_uri=_settings.milvus_uri,
+            milvus_token=_settings.milvus_token or None,
+            milvus_db_name=_settings.milvus_db_name,
         )
     return _memory
 

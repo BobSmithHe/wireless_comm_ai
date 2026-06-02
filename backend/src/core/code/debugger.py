@@ -1,7 +1,20 @@
 """
 Code Debugger - analyzes execution errors and suggests fixes.
 """
+import re
 from dataclasses import dataclass
+
+
+def _extract_code(text: str) -> str:
+    """Extract code from LLM response — handles markdown blocks and raw code."""
+    m = re.search(r"```(?:\w+)?\s*\n(.*?)```", text, re.DOTALL)
+    if m:
+        return m.group(1).strip()
+    if "```" in text:
+        parts = text.split("```")
+        if len(parts) >= 3:
+            return parts[1].strip()
+    return text.strip()
 
 
 @dataclass
@@ -75,9 +88,5 @@ class CodeDebugger:
 
 Return ONLY the corrected complete code. No explanations."""
 
-        response = await self.llm.chat([{"role": "user", "content": prompt}])
-        fixed = response
-        if fixed.startswith("```"):
-            lines = fixed.split("\n")
-            fixed = "\n".join(lines[1:-1] if lines[-1].strip() == "```" else lines[1:])
-        return fixed
+        resp = await self.llm.chat([{"role": "user", "content": prompt}])
+        return _extract_code(resp["content"])

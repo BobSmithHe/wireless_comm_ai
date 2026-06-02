@@ -6,7 +6,6 @@ import sys
 import tempfile
 import os
 import re
-import base64
 import asyncio
 import shutil
 
@@ -19,18 +18,16 @@ IMAGE_CAPTURE_SUFFIX = """
 try:
     import base64 as _b64, io as _io
     import matplotlib.pyplot as _plt
-    _img_files = []
+    _img_payloads = []
     for _fn in _plt.get_fignums():
         _fig = _plt.figure(_fn)
         _buf = _io.BytesIO()
         _fig.savefig(_buf, format='png', dpi=80, bbox_inches='tight')
         _buf.seek(0)
-        with open('/tmp/__img_' + str(_fn) + '.png', 'wb') as _f:
-            _f.write(_buf.read())
-        _img_files.append('__img_' + str(_fn) + '.png')
+        _img_payloads.append(_b64.b64encode(_buf.read()).decode())
         _plt.close(_fig)
-    if _img_files:
-        print('__IMGFILES__:' + '|'.join(_img_files))
+    if _img_payloads:
+        print('__IMAGES_B64__:' + '||'.join(_img_payloads))
 except Exception:
     pass
 """
@@ -96,7 +93,7 @@ class CodeExecutor:
                 )
 
             result = await asyncio.to_thread(_run)
-            return self._parse_result(result.stdout, result.stderr, result.returncode, tempfile.gettempdir())
+            return self._parse_result(result.stdout, result.stderr, result.returncode)
 
         except (asyncio.TimeoutError, subprocess.TimeoutExpired):
             return {"stdout": "", "stderr": f"Execution timed out after {self.timeout}s", "exit_code": -1, "images": []}
@@ -131,7 +128,7 @@ class CodeExecutor:
                 return p.stdout, p.stderr, p.returncode
 
             result = await asyncio.to_thread(_run)
-            return self._parse_result(result.stdout, result.stderr, result.returncode, tmpdir)
+            return self._parse_result(result.stdout, result.stderr, result.returncode)
 
         except (asyncio.TimeoutError, subprocess.TimeoutExpired):
             return {"stdout": "", "stderr": f"Execution timed out after {self.timeout}s", "exit_code": -1, "images": []}
@@ -149,38 +146,44 @@ class CodeExecutor:
 
     def _wrap_code(self, code: str) -> str:
         return (
-            "import sys, warnings\n"
+            "import sys, os, warnings\n"
             "sys.stdout.reconfigure(encoding='utf-8')\n"
             "sys.stderr.reconfigure(encoding='utf-8')\n"
             "warnings.filterwarnings('ignore', message='.*non-interactive.*')\n"
             "warnings.filterwarnings('ignore', message='.*cannot be shown.*')\n"
+            "warnings.filterwarnings('ignore', category=UserWarning)\n"
+            "os.environ.setdefault('MPLCONFIGDIR', '/tmp')\n"
             "import matplotlib\n"
             "matplotlib.use('Agg')\n"
             "import matplotlib.pyplot as _plt_setup\n"
-            "_plt_setup.rcParams['font.sans-serif'] = ['SimHei', 'Microsoft YaHei', 'Noto Sans SC', 'DejaVu Sans']\n"
+            "import matplotlib.font_manager as _fm\n"
+            "_avail = {f.name for f in _fm.fontManager.ttflist}\n"
+            "_cjk_candidates = ['WenQuanYi Micro Hei', 'Noto Sans CJK SC', 'SimHei', 'Microsoft YaHei', 'WenQuanYi Zen Hei', 'Noto Sans SC']\n"
+            "_cjk_font = next((f for f in _cjk_candidates if f in _avail), None)\n"
+            "if _cjk_font:\n"
+            "    _plt_setup.rcParams['font.sans-serif'] = [_cjk_font, 'DejaVu Sans']\n"
+            "else:\n"
+            "    _plt_setup.rcParams['font.sans-serif'] = ['DejaVu Sans']\n"
             "_plt_setup.rcParams['axes.unicode_minus'] = False\n"
-            "del _plt_setup\n"
+            "del _plt_setup, _fm, _cjk_candidates, _cjk_font, _avail\n"
             + code
             + "\n" + IMAGE_CAPTURE_SUFFIX
         )
 
-    def _parse_result(self, stdout: bytes, stderr: bytes, returncode: int, tmpdir: str) -> dict:
-        stdout_str = _decode_output(stdout)[:20000]
+    def _parse_result(self, stdout: bytes, stderr: bytes, returncode: int) -> dict:
+        # Decode full stdout first — images get extracted before truncation
+        stdout_full = _decode_output(stdout)
         stderr_str = _decode_output(stderr)[:10000]
 
         images = []
-        clean_stdout = stdout_str
-        m = re.search(r"__IMGFILES__:([\w_.|]+)", stdout_str)
+        clean_stdout = stdout_full
+        m = re.search(r"__IMAGES_B64__:([A-Za-z0-9+/=|]+)", stdout_full)
         if m:
-            for fname in m.group(1).split("|"):
-                fpath = os.path.join(tmpdir, fname)
-                try:
-                    with open(fpath, "rb") as imgf:
-                        images.append(base64.b64encode(imgf.read()).decode())
-                except Exception:
-                    pass
-            clean_stdout = stdout_str[: m.start()] + stdout_str[m.end():]
+            images = [b64 for b64 in m.group(1).split("||") if b64]
+            clean_stdout = stdout_full[: m.start()] + stdout_full[m.end():]
 
+        # Truncate user-visible output only (images already extracted above)
+        clean_stdout = clean_stdout[:20000]
         return {
             "stdout": clean_stdout.strip(),
             "stderr": stderr_str.strip(),

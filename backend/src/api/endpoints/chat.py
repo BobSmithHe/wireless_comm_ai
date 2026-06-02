@@ -37,7 +37,6 @@ async def _update_redis_cache(conv_id: int, user_id: int, db: Session):
 class ChatRequest(BaseModel):
     message: str
     conversation_id: int | None = None
-    use_agent: bool = False
     system_context: str | None = None  # optional system hint (e.g., tool error for auto-fix)
 
 
@@ -101,7 +100,6 @@ async def chat(
             message=req.message,
             conversation_id=conv.id,
             history=history,
-            use_agent=req.use_agent,
             db_session=db,
             system_context=req.system_context,
         )

@@ -13,8 +13,9 @@ pymysql==1.1.1
 redis==5.2.1
 hiredis==2.4.0
 
-# ChromaDB (vector store)
-chromadb==0.5.23
+# Milvus (vector store)
+pymilvus>=2.4.0,<3.0.0
+jieba>=0.42.1
 
 # Embeddings
 sentence-transformers>=3.0.0

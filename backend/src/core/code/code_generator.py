@@ -1,3 +1,20 @@
+import re
+
+
+def _extract_code(text: str) -> str:
+    """Extract code from LLM response — handles markdown blocks and raw code."""
+    # Prefer fenced code blocks
+    m = re.search(r"```(?:\w+)?\s*\n(.*?)```", text, re.DOTALL)
+    if m:
+        return m.group(1).strip()
+    # Fallback: lines between ``` markers even if malformed
+    if "```" in text:
+        parts = text.split("```")
+        if len(parts) >= 3:
+            return parts[1].strip()
+    return text.strip()
+
+
 class CodeGenerator:
     """Generate wireless communication simulation code using LLM."""
 
@@ -18,12 +35,8 @@ Requirements:
 - Follow PEP 8 style
 - Handle typical edge cases"""
 
-        response = await self.llm.chat([{"role": "user", "content": prompt}])
-        code = response
-        if code.startswith("```"):
-            lines = code.split("\n")
-            code = "\n".join(lines[1:-1] if lines[-1].strip() == "```" else lines[1:])
-        return code
+        resp = await self.llm.chat([{"role": "user", "content": prompt}])
+        return _extract_code(resp["content"])
 
     async def debug(self, code: str, error_message: str) -> str:
         prompt = f"""Fix this Python code that has an error.
@@ -38,9 +51,5 @@ ERROR:
 
 Return ONLY the corrected code, no explanations."""
 
-        response = await self.llm.chat([{"role": "user", "content": prompt}])
-        fixed = response
-        if fixed.startswith("```"):
-            lines = fixed.split("\n")
-            fixed = "\n".join(lines[1:-1] if lines[-1].strip() == "```" else lines[1:])
-        return fixed
+        resp = await self.llm.chat([{"role": "user", "content": prompt}])
+        return _extract_code(resp["content"])

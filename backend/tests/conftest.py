@@ -7,10 +7,10 @@ from unittest.mock import AsyncMock, MagicMock
 def mock_llm():
     """A mock LLM client that returns preset responses."""
     llm = MagicMock()
-    llm.chat = AsyncMock(return_value="Mock LLM response.")
+    llm.chat = AsyncMock(return_value={"type": "text", "content": "Mock LLM response."})
     llm.raw_chat = AsyncMock(return_value="Mock raw response.")
     llm.chat_stream = AsyncMock(return_value=iter(["chunk1", "chunk2"]))
-    llm.embed = AsyncMock(return_value=[[0.1] * 384])
+    llm.embed = AsyncMock(return_value=[[0.1] * 1024])
     return llm
 
 

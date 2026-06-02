@@ -18,7 +18,7 @@
           <!-- Tool messages: collapsible thinking process -->
           <div v-if="msg.role === 'tool' || msg.role === 'tool_result'" class="thinking-group">
             <div v-if="msg.role === 'tool'" class="thinking-toggle" @click="toggleThinking(msg._key)">
-              <span>🔧 思考过程</span>
+              <span>{{ toolLabel(msg.content) }}</span>
               <span class="toggle-arrow">{{ thinkingOpen[msg._key] !== false ? '▼' : '▶' }}</span>
             </div>
             <div v-show="thinkingOpen[msg._key] !== false" class="thinking-body">
@@ -38,7 +38,7 @@
                   </span>
                 </div>
                 <div v-if="er.images && er.images.length" class="exec-images">
-                  <img v-for="(img, ii) in er.images" :key="ii" :src="'data:image/png;base64,' + img" class="exec-image" @click="previewImage(img)" />
+                  <img v-for="(img, ii) in er.images" :key="ii" :src="'data:image/png;base64,' + img" class="exec-image" @click="previewImage(img)" @error="(e) => e.target.style.display = 'none'" />
                 </div>
                 <pre v-if="er.stdout" class="exec-stdout">{{ er.stdout }}</pre>
                 <pre v-if="er.stderr" class="exec-stderr">{{ er.stderr }}</pre>
@@ -67,7 +67,7 @@
 </template>
 
 <script setup>
-import { ref, computed, nextTick, shallowRef, onMounted } from "vue";
+import { ref, computed, nextTick, onMounted } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
 import { marked } from "marked";
 import katex from "katex";
@@ -75,7 +75,7 @@ import "katex/dist/katex.min.css";
 import api from "../api";
 
 const input = ref("");
-const messages = shallowRef([]);
+const messages = ref([]);
 const loadingConvId = ref(null);
 const loading = computed(() => loadingConvId.value !== null);
 const messagesContainer = ref(null);
@@ -182,7 +182,11 @@ function renderHtml(raw, msgIdx) {
     const key = `c_${msgIdx}_${blockIdx++}`;
     codeMap[key] = { code: code.trim(), msgIdx };
     const esc = escapeHtml(code.trim()), ln = lang || "text";
-    return `<div class="code-block-wrapper"><div class="code-block-header"><span>${escapeHtml(ln)}</span><div class="code-block-actions"><button class="copy-code-btn" data-key="${key}">复制</button><button class="run-code-btn" data-key="${key}">▶ 运行</button></div></div><pre><code class="language-${escapeHtml(ln)}">${esc}</code></pre></div>`;
+    const isPython = ln === "python" || ln === "py";
+    const runBtn = isPython
+      ? `<button class="run-code-btn" data-key="${key}">▶ 运行</button>`
+      : "";
+    return `<div class="code-block-wrapper"><div class="code-block-header"><span>${escapeHtml(ln)}</span><div class="code-block-actions"><button class="copy-code-btn" data-key="${key}">复制</button>${runBtn}</div></div><pre><code class="language-${escapeHtml(ln)}">${esc}</code></pre></div>`;
   });
   remaining = remaining.replace(/`([^`]+)`/g, (_,c) => `<code>${escapeHtml(c)}</code>`);
   remaining = remaining.replace(/\$\$([\s\S]*?)\$\$/g, (_,f) => { try { return katex.renderToString(f.trim(),{displayMode:true,throwOnError:false}); } catch { return `<pre>${escapeHtml(f)}</pre>`; }});
@@ -197,6 +201,15 @@ function addLocalMessage(role, content) {
 
 // ---- Code execution ----
 function extractCodeBlock(t) { const m = t.match(/```\w*\n([\s\S]*?)```/); return m ? m[1].trim() : null; }
+function toolLabel(content) {
+  if (!content) return '🔧 思考过程';
+  if (content.includes('知识库检索')) return '📚 知识库检索';
+  if (content.includes('记忆检索')) return '🧠 记忆检索';
+  if (content.includes('历史检索')) return '📜 历史检索';
+  if (content.includes('Agent')) return '🤖 Agent 规划';
+  if (content.includes('代码执行') || content.includes('工具调用')) return '💻 代码执行';
+  return '🔧 思考过程';
+}
 function toggleThinking(key) { thinkingOpen.value = { ...thinkingOpen.value, [key]: thinkingOpen.value[key] === false ? true : false }; }
 
 async function handleCodeClick(event) {
@@ -227,8 +240,11 @@ async function handleCodeClick(event) {
       resultMsg.content = res.data.stdout ? `[执行结果]\n\`\`\`\n${res.data.stdout}\n\`\`\`` : `[执行错误]\n\`\`\`\n${res.data.stderr}\n\`\`\``;
       resultMsg._html = renderHtml(resultMsg.content, resultMsg._key);
       messages.value = [...messages.value];
-      msg.execResults.push({ stdout: res.data.stdout || "", stderr: res.data.stderr || "", exitCode: res.data.exit_code ?? -1, execTimeMs: Date.now() - startTime, attempt: attempt + 1, images: res.data.images || [] });
+      const execResult = { stdout: res.data.stdout || "", stderr: res.data.stderr || "", exitCode: res.data.exit_code ?? -1, execTimeMs: Date.now() - startTime, attempt: attempt + 1, images: res.data.images || [] };
+      console.log('[IMG-DEBUG] images field:', res.data.images?.length, 'type:', typeof res.data.images?.[0], 'prefix:', String(res.data.images?.[0]).substring(0, 40));
+      msg.execResults.push(execResult);
       messages.value = [...messages.value];
+      console.log('[IMG-DEBUG] pushed to msg.execResults, total:', msg.execResults.length, 'last images:', msg.execResults[msg.execResults.length-1]?.images?.length);
 
       // Save tool result to conversation
       api.post(`/api/conversations/${currentConvId.value}/tool`, {
@@ -252,7 +268,7 @@ async function handleCodeClick(event) {
             thinkingMsg.content = `[工具调用 第${attempt+2}次]\n\`\`\`python\n${fixedCode}\n\`\`\``;
             thinkingMsg._html = renderHtml(thinkingMsg.content, thinkingMsg._key);
             resultMsg.content = "运行中..."; resultMsg._html = renderHtml("运行中...", resultMsg._key);
-            messages.value=[...messages.value]; await nextTick(); }
+            messages.value=[...messages.value]; await nextTick(); scrollToBottom(); }
           else { addLocalMessage("system","Agent 未能生成有效修正代码。"); break; }
         } catch { addLocalMessage("system","自动修正请求失败。"); break; }
       } else { addLocalMessage("system",`已重试${maxRetries}次仍未成功。`); }
@@ -309,8 +325,10 @@ function scrollToBottom() { if (messagesContainer.value) messagesContainer.value
 .conv-delete:hover { color: #f56c6c; }
 
 .chat-container { flex: 1; display: flex; flex-direction: column; }
+.chat-container :deep(.el-card__body) { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
 .chat-messages { flex: 1; overflow-y: auto; padding: 16px; }
 .load-more { text-align: center; padding: 8px; color: #1677ff; cursor: pointer; font-size: 13px; margin-bottom: 12px; }
+.load-more:hover { color: #409eff; text-decoration: underline; }
 .load-more:hover { color: #409eff; text-decoration: underline; }
 
 .message { margin-bottom: 16px; }
@@ -320,7 +338,7 @@ function scrollToBottom() { if (messagesContainer.value) messagesContainer.value
 .message-content { display: inline-block; padding: 10px 14px; font-size: 14px; line-height: 1.6; }
 .message-content :deep(p) { margin: 4px 0; }
 .message-content :deep(.katex-display) { margin: 8px 0; overflow-x: auto; }
-.chat-input { padding: 12px 0 0; border-top: 1px solid #eee; }
+.chat-input { padding: 12px 16px; border-top: 1px solid #eee; background: #fff; position: sticky; bottom: 0; z-index: 10; }
 
 /* Tool / thinking process */
 .thinking-group { margin-bottom: 12px; }

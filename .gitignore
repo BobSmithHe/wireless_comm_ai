@@ -23,7 +23,8 @@ node_modules/
 frontend/dist/
 
 # Data (local)
-backend/data/chroma/
+backend/data/milvus.db
+backend/data/milvus/
 backend/data/memory/
 backend/logs/
 
@@ -34,3 +35,4 @@ docker-compose.override.yml
 *_api_key*
 *secret*
 *.pem
+identifier.sqlite

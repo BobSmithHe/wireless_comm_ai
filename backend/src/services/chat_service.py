@@ -1,15 +1,14 @@
+import json
 from typing import AsyncIterator
-from ..core.llm.deepseek_client import DeepSeekClient
+from ..core.llm.deepseek_client import DeepSeekClient, RAG_TOOLS
 from ..core.rag.knowledge_base import KnowledgeBase
-from ..core.agent.agent_core import AgentCore
-from ..core.agent.task_planner import TaskPlanner
 from ..core.code.executor import CodeExecutor
 from ..core.context import ContextCompressor, ConversationMemory
 from ..core.observability import observe, update_current_span
 from ..config.settings import get_settings
 from ..database.models import Message
 
-_planner = TaskPlanner()
+MAX_TOOL_ROUNDS = 3
 
 
 class ChatService:
@@ -17,17 +16,16 @@ class ChatService:
         self.llm = llm
         self.kb = knowledge_base
         self.code_exec = code_executor
-        self.memory = conversation_memory  # ConversationMemory (compressed history)
-        self.agent = AgentCore(llm, knowledge_base, code_executor)
+        self.memory = conversation_memory
 
         settings = get_settings()
         if settings.context_compression_enabled:
             self.compressor = ContextCompressor(
                 llm_client=llm,
-                budget_tokens=settings.context_compression_budget_tokens,
-                keep_recent=settings.context_compression_keep_recent,
+                budget_tokens=32000,
+                keep_recent=8,
                 summary_max_tokens=settings.context_compression_summary_max_tokens,
-                trigger_ratio=settings.context_compression_trigger_ratio,
+                trigger_ratio=0.8,
             )
         else:
             self.compressor = None
@@ -35,37 +33,53 @@ class ChatService:
     async def _compress_history(
         self, history: list[dict] | None, user_id: int, conversation_id: int,
     ) -> tuple[list[dict], dict | None]:
-        """Compress history if over budget. Returns (messages, compression_metadata).
-
-        Compressed messages are indexed into the vector DB keyed by conversation,
-        so future queries against the same conversation can retrieve them.
-        """
+        """Round-based compression: at N rounds, keep last K, archive & compress the rest."""
         if self.compressor is None or not history:
             return (history or []), None
-        result = await self.compressor.compress(history)
-        if not result.was_compressed:
+
+        s = get_settings()
+        trigger_count = max(s.context_compression_trigger_rounds, 4)
+        keep_count = min(s.context_compression_keep_rounds, trigger_count // 2)
+
+        # Count total messages
+        if len(history) < trigger_count:
             return history, None
 
-        if result.compressed_messages:
-            self._index_compressed_history(result.compressed_messages, user_id, conversation_id)
+        # Split: archive first N-keep messages, keep last keep messages
+        to_archive = history[:-keep_count] if keep_count > 0 else history
+        recent = history[-keep_count:] if keep_count > 0 else []
 
-        return result.messages, {
+        if not to_archive:
+            return history, None
+
+        # Store full old messages in Milvus for later retrieval
+        self._index_compressed_history(to_archive, user_id, conversation_id)
+
+        # Compress old messages into a summary for immediate context
+        result = await self.compressor.compress(to_archive)
+        summary = result.summary if result.was_compressed else self._fallback_summary(to_archive)
+
+        compressed = [{"role": "system", "content": f"[对话历史摘要 共{len(to_archive)}条消息]\n{summary}"}]
+        compressed.extend(recent)
+
+        return compressed, {
             "compression_was_compressed": True,
-            "compression_original_tokens": result.original_token_count,
-            "compression_compressed_tokens": result.compressed_token_count,
-            "compression_kept_messages": result.kept_message_count,
-            "compression_compressed_messages": result.compressed_message_count,
-            "compression_reduction_ratio": result.reduction_ratio,
+            "compression_archived_msgs": len(to_archive),
+            "compression_kept_msgs": len(recent),
+            "total_msgs": len(history),
         }
+
+    def _fallback_summary(self, messages: list[dict]) -> str:
+        """Simple concatenation when LLM compression is unavailable."""
+        parts = []
+        for m in messages[:20]:
+            content = m.get("content", "")
+            parts.append(f"[{m.get('role', '?')}]: {content[:200]}")
+        return "\n".join(parts)
 
     def _index_compressed_history(
         self, messages: list[dict], user_id: int, conversation_id: int,
     ) -> None:
-        """Index compressed messages into vector DB, scoped to user + conversation.
-
-        Each compression adds NEW chunks — old chunks from previous compressions
-        remain searchable. The source tag carries the conversation_id for filtering.
-        """
         try:
             source_tag = f"compressed_history:{conversation_id}"
             chunks = []
@@ -75,7 +89,7 @@ class ChatService:
                 if content.strip():
                     chunks.append(f"[{role}]: {content[:2000]}")
             if chunks:
-                self.memory.add_chunks(
+                ids = self.memory.add_chunks(
                     texts=chunks,
                     metadatas=[{
                         "source": source_tag,
@@ -84,90 +98,141 @@ class ChatService:
                         "conversation_id": conversation_id,
                     } for _ in chunks],
                 )
-        except Exception:
-            pass
+                from ..utils.logger import logger
+                logger.info(f"Memory indexed: {len(ids)} chunks for conv {conversation_id}")
+        except Exception as e:
+            from ..utils.logger import logger
+            logger.warning(f"Memory index failed for conv {conversation_id}: {e}")
+
+    # ------------------------------------------------------------------
+    # Core chat — LLM-driven tool calling (RAG search_knowledge)
+    # ------------------------------------------------------------------
 
     @observe()
     async def chat(
         self, user_id, message, conversation_id=0, history=None,
-        use_agent=False, db_session=None, system_context=None,
+        db_session=None, system_context=None,
     ) -> dict:
-        if use_agent:
-            return await self._agent_chat(user_id, message, conversation_id, history, db_session)
-
-        # ---- Retrieve compressed conversation history from vector DB ----
-        history_chunks = await self.memory.search(message, top_k=2)
-        source_tag = f"compressed_history:{conversation_id}"
-        relevant_history = [r for r in history_chunks if r.score > 0.3 and r.source == source_tag]
-
-        if relevant_history:
-            self._save_tool(db_session, user_id, conversation_id,
-                "历史检索", f"检索到 {len(relevant_history)} 条相关对话片段")
-
-        # Build messages
+        # Build initial messages: compressed history + user query
         compressed_history, comp_meta = await self._compress_history(history, user_id, conversation_id)
-        context_parts = []
-        if relevant_history:
-            context_parts.append("[Relevant Conversation History]\n" + "\n".join(r.content[:300] for r in relevant_history))
-        context = "\n\n".join(context_parts)
         messages = compressed_history + [{"role": "user", "content": message}]
         if system_context:
             messages = [{"role": "system", "content": system_context}] + messages
-        if context:
-            messages = [{"role": "system", "content": context}] + messages
 
-        response = await self.llm.chat(messages)
+        sources = []
+        tool_rounds = 0
+        relevant_history = []
+        for _ in range(MAX_TOOL_ROUNDS):
+            resp = await self.llm.chat(messages, tools=RAG_TOOLS)
 
+            if resp["type"] == "text":
+                update_current_span(
+                    output=resp["content"],
+                    metadata={
+                        "tool_rounds": tool_rounds,
+                        "history_hits": len(relevant_history),
+                        **(comp_meta or {}),
+                    },
+                )
+                return {"response": resp["content"], "sources": sources}
+
+            # Process tool calls — only first to avoid duplicate searches
+            tc_active = resp["tool_calls"][:1]
+            messages.append({
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {"id": tc.id, "type": "function",
+                     "function": {"name": tc.function.name, "arguments": tc.function.arguments}}
+                    for tc in tc_active
+                ],
+            })
+
+            for tc in tc_active:
+                tool_rounds += 1
+                if tc.function.name == "search_knowledge":
+                    args = json.loads(tc.function.arguments)
+                    query = args.get("query", message)
+                    results = await self.kb.search(query, top_k=3)
+
+                    if results:
+                        sources = [{"content": r.content[:200], "score": r.score, "source": r.source} for r in results]
+                        tool_output = "\n\n".join(
+                            f"[{r.source}] (score={r.score:.2f})\n{r.content[:1000]}"
+                            for r in results
+                        )
+                        previews = "\n".join(
+                            f"[{i+1}] {r.content[:120]}..."
+                            for i, r in enumerate(results[:3])
+                        )
+                        self._save_tool(db_session, user_id, conversation_id,
+                            f"RAG 知识库检索: {query}",
+                            f"检索到 {len(results)} 条:\n{previews}")
+                    else:
+                        tool_output = "未找到相关知识。"
+                        self._save_tool(db_session, user_id, conversation_id,
+                            f"RAG 知识库检索: {query}", "无结果")
+
+                elif tc.function.name == "search_memory":
+                    args = json.loads(tc.function.arguments)
+                    query = args.get("query", message)
+                    try:
+                        mem_results = await self.memory.search(query, user_id=user_id, top_k=5)
+                        mem_results = [r for r in mem_results if r.score > 0.3]
+                        source_tag = f"compressed_history:{conversation_id}"
+                        same_conv = [r for r in mem_results if r.source == source_tag]
+                        other_conv = [r for r in mem_results if r.source != source_tag]
+                        mem_results = same_conv + other_conv
+                        if mem_results:
+                            relevant_history = mem_results
+                            parts = []
+                            for r in mem_results[:5]:
+                                label = "" if r.source == source_tag else f" [对话{r.source.split(':')[-1]}]"
+                                parts.append(f"[conversation history{label}] {r.content[:800]}")
+                            tool_output = "\n\n".join(parts)
+                            self._save_tool(db_session, user_id, conversation_id,
+                                f"记忆检索: {query}",
+                                f"检索到 {len(mem_results)} 条(本对话{len(same_conv)}条, 跨对话{len(other_conv)}条)")
+                        else:
+                            tool_output = "未找到相关历史对话记忆。"
+                    except Exception:
+                        tool_output = "记忆检索暂时不可用。"
+                else:
+                    tool_output = f"Unknown tool: {tc.function.name}"
+
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tc.id,
+                    "content": tool_output,
+                })
+
+        # Final response after tool rounds exhausted
+        resp = await self.llm.chat(messages, tools=None)
+        final_text = resp["content"] if resp["type"] == "text" else "（处理超时，请重试）"
         update_current_span(
-            output=response,
+            output=final_text,
             metadata={
-                "use_agent": False,
+                "tool_rounds": tool_rounds,
                 "history_hits": len(relevant_history),
                 **(comp_meta or {}),
             },
         )
-        return {"response": response, "sources": []}
+        return {"response": final_text, "sources": sources}
 
-    @observe()
-    async def _agent_chat(self, user_id, message, conv_id, history, db_session):
-        """Agent mode with full tool recording."""
-        tasks = _planner.plan(message)
-        task_desc = "\n".join(f"{i+1}. [{t.task_type.value}] {t.description}" for i, t in enumerate(tasks))
-        self._save_tool(db_session, user_id, conv_id,
-            f"Agent 任务规划\n查询: {message[:100]}",
-            f"拆解为 {len(tasks)} 个子任务:\n{task_desc}")
-
-        # Compressed conversation history (passive injection — always relevant)
-        history_chunks = await self.memory.search(message, top_k=2)
-        source_tag = f"compressed_history:{conv_id}"
-        relevant_history = [r for r in history_chunks if r.score > 0.3 and r.source == source_tag]
-        if relevant_history:
-            self._save_tool(db_session, user_id, conv_id,
-                "Agent 历史检索", f"检索到 {len(relevant_history)} 条相关历史对话片段")
-
-        compressed_history, comp_meta = await self._compress_history(history, user_id, conv_id)
-        result = await self.agent.run(user_id, message, compressed_history)
-
-        update_current_span(
-            output=result,
-            metadata={
-                "use_agent": True,
-                "num_tasks": len(tasks),
-                "history_hits": len(relevant_history),
-                **(comp_meta or {}),
-            },
-        )
-        return result
+    # ------------------------------------------------------------------
+    # Streaming chat (no tool calling — tools need non-streaming flow)
+    # ------------------------------------------------------------------
 
     @observe()
     async def chat_stream(
         self, user_id, message, conversation_id=0, history=None, db_session=None,
     ) -> AsyncIterator[str]:
-        history_chunks = await self.memory.search(message, top_k=2)
-        source_tag = f"compressed_history:{conversation_id}"
-        relevant_history = [r for r in history_chunks if r.score > 0.3 and r.source == source_tag]
-
-        if relevant_history and db_session:
+        try:
+            history_chunks = await self.memory.search(message, top_k=2)
+            source_tag = f"compressed_history:{conversation_id}"
+            relevant_history = [r for r in history_chunks if r.score > 0.3 and r.source == source_tag]
+        except Exception:
+            history_chunks, relevant_history = [], []
             self._save_tool(db_session, user_id, conversation_id,
                 "历史检索", f"检索到 {len(relevant_history)} 条相关对话片段")
 
@@ -196,7 +261,6 @@ class ChatService:
         )
 
     def _save_tool(self, db_session, user_id, conv_id, tool_call, tool_result):
-        """Add tool messages to the DB session (committed later by caller)."""
         if not db_session or not conv_id:
             return
         try:

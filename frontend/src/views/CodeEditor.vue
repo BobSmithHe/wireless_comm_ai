@@ -34,7 +34,7 @@
           <div v-if="images.length" class="code-images">
             <img v-for="(img, i) in images" :key="i"
               :src="'data:image/png;base64,' + img"
-              class="code-image" @click="previewSrc = 'data:image/png;base64,' + img" />
+              class="code-image" @click="previewSrc = 'data:image/png;base64,' + img" @error="(e) => e.target.style.display = 'none'" />
           </div>
           <pre class="output-area">{{ output || "尚无输出..." }}</pre>
           <pre v-if="error" class="error-area">{{ error }}</pre>

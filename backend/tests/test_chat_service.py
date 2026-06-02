@@ -36,9 +36,3 @@ class TestChatService:
             long_hist.append({"role": "assistant", "content": f"A{i}: " + "y" * 100})
         result = await svc.chat(user_id=1, message="Query", conversation_id=1, history=long_hist)
         assert "response" in result
-
-    @pytest.mark.asyncio
-    async def test_agent_chat(self, svc):
-        result = await svc.chat(user_id=1, message="Hello", conversation_id=1, history=[], use_agent=True)
-        assert "response" in result
-        assert isinstance(result["response"], str)
