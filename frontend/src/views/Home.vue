@@ -4,25 +4,32 @@
     <p class="subtitle">面向无线通信工程师和研究人员的智能研发助手</p>
 
     <el-row :gutter="20" style="margin-top: 24px">
-      <el-col :span="8">
+      <el-col :span="6">
         <el-card shadow="hover" @click="$router.push('/chat')" class="feature-card">
           <el-icon :size="40" color="#409eff"><ChatDotRound /></el-icon>
           <h3>智能对话</h3>
           <p>基于 RAG 的无线通信专业知识问答，支持代码生成与执行</p>
         </el-card>
       </el-col>
-      <el-col :span="8">
+      <el-col :span="6">
         <el-card shadow="hover" @click="$router.push('/knowledge')" class="feature-card">
           <el-icon :size="40" color="#67c23a"><Document /></el-icon>
           <h3>知识库</h3>
           <p>检索无线通信领域算法、协议规范、代码示例等专业知识</p>
         </el-card>
       </el-col>
-      <el-col :span="8">
+      <el-col :span="6">
         <el-card shadow="hover" @click="$router.push('/code')" class="feature-card">
           <el-icon :size="40" color="#e6a23c"><Monitor /></el-icon>
           <h3>代码执行</h3>
           <p>在线编写、运行和调试 Python 无线通信仿真代码</p>
+        </el-card>
+      </el-col>
+      <el-col :span="6">
+        <el-card shadow="hover" @click="$router.push('/papers')" class="feature-card">
+          <el-icon :size="40" color="#f56c6c"><Reading /></el-icon>
+          <h3>论文阅读</h3>
+          <p>上传 PDF 论文，AI 摘要并与论文内容对话</p>
         </el-card>
       </el-col>
     </el-row>
