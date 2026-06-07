@@ -4,12 +4,12 @@ from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
-from ...config.database import get_db
+from ...core.config import get_db
 from ...database.models import Conversation, Message
 from ...services.chat_service import ChatService
 from ...core.observability import trace_attributes
 from ...cache.redis_client import get_redis
-from ..dependencies import get_current_user, get_chat_service
+from ..deps import get_current_user, get_chat_service
 
 router = APIRouter(prefix="/api", tags=["chat"])
 
@@ -17,7 +17,6 @@ CACHE_TTL = 1800
 
 
 async def _update_redis_cache(conv_id: int, user_id: int, db: Session):
-    """Write the latest 50 messages for a conversation into Redis (cache-on-write)."""
     try:
         msgs = (
             db.query(Message)
@@ -37,17 +36,12 @@ async def _update_redis_cache(conv_id: int, user_id: int, db: Session):
 class ChatRequest(BaseModel):
     message: str
     conversation_id: int | None = None
-    system_context: str | None = None  # optional system hint (e.g., tool error for auto-fix)
-
-
-class ChatResponse(BaseModel):
-    response: str
-    conversation_id: int
-    sources: list[dict] = []
+    use_rag: bool = True
+    use_web: bool = False
+    system_context: str | None = None
 
 
 def _get_history(db: Session, conv_id: int) -> list[dict]:
-    """Get conversation history for LLM context (filters out tool messages)."""
     msgs = (
         db.query(Message)
         .filter(Message.conversation_id == conv_id)
@@ -57,7 +51,7 @@ def _get_history(db: Session, conv_id: int) -> list[dict]:
     return [
         {"role": m.role, "content": m.content}
         for m in msgs
-        if m.role in ("user", "assistant", "system")  # skip tool/tool_result for LLM
+        if m.role in ("user", "assistant", "system")
     ]
 
 
@@ -81,44 +75,6 @@ def _get_or_create_conv(db: Session, user_id: int, conv_id: int | None) -> Conve
     return conv
 
 
-@router.post("/chat", response_model=ChatResponse)
-async def chat(
-    req: ChatRequest,
-    user=Depends(get_current_user),
-    db: Session = Depends(get_db),
-    chat_service: ChatService = Depends(get_chat_service),
-):
-    conv = _get_or_create_conv(db, user.id, req.conversation_id)
-    history = _get_history(db, conv.id)
-
-    # Save user message first for correct ordering: user → tools → assistant
-    _save_msg(db, user.id, conv.id, "user", req.message)
-
-    with trace_attributes(user_id=str(user.id), session_id=str(conv.id)):
-        result = await chat_service.chat(
-            user_id=user.id,
-            message=req.message,
-            conversation_id=conv.id,
-            history=history,
-            db_session=db,
-            system_context=req.system_context,
-        )
-
-    _save_msg(db, user.id, conv.id, "assistant", result["response"])
-    if conv.title == "新对话":
-        conv.title = req.message[:30] + ("..." if len(req.message) > 30 else "")
-    db.commit()
-
-    # Write latest messages to Redis cache so switching back is instant
-    await _update_redis_cache(conv.id, user.id, db)
-
-    return ChatResponse(
-        response=result["response"],
-        conversation_id=conv.id,
-        sources=result.get("sources", []),
-    )
-
-
 @router.post("/chat/stream")
 async def chat_stream(
     req: ChatRequest,
@@ -129,25 +85,40 @@ async def chat_stream(
     conv = _get_or_create_conv(db, user.id, req.conversation_id)
     history = _get_history(db, conv.id)
     _save_msg(db, user.id, conv.id, "user", req.message)
+    db.commit()
+
+    user_id = user.id
+    conv_id = conv.id
+    is_new = conv.title == "新对话"
+    if is_new:
+        conv.title = req.message[:30] + ("..." if len(req.message) > 30 else "")
+        db.commit()
 
     async def event_stream():
-        with trace_attributes(user_id=str(user.id), session_id=str(conv.id)):
+        yield 'data: {"event":"status","content":"连接成功，正在分析问题..."}\n\n'
+        with trace_attributes(user_id=str(user_id), session_id=str(conv_id)):
             full_response = ""
-            async for chunk in chat_service.chat_stream(
-                user_id=user.id,
+            async for line in chat_service.chat_sse(
+                user_id=user_id,
                 message=req.message,
-                conversation_id=conv.id,
+                conversation_id=conv_id,
                 history=history,
                 db_session=db,
+                use_rag=req.use_rag,
+                use_web=req.use_web,
             ):
-                full_response += chunk
-                yield f"data: {chunk}\n\n"
+                yield line
+                if '"event":"answer"' in line:
+                    import json as _json
+                    try:
+                        data = _json.loads(line[6:].strip())
+                        full_response += data.get("content", "")
+                    except Exception:
+                        pass
 
-            _save_msg(db, user.id, conv.id, "assistant", full_response)
-            if conv.title == "新对话":
-                conv.title = req.message[:30] + ("..." if len(req.message) > 30 else "")
+            if full_response:
+                _save_msg(db, user_id, conv_id, "assistant", full_response)
             db.commit()
-            await _update_redis_cache(conv.id, user.id, db)
-            yield "data: [DONE]\n\n"
+            await _update_redis_cache(conv_id, user_id, db)
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")

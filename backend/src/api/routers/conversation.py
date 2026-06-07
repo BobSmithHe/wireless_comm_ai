@@ -5,10 +5,10 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from ...config.database import get_db
+from ...core.config import get_db
 from ...database.models import Conversation, Message
 from ...cache.redis_client import get_redis
-from ..dependencies import get_current_user
+from ..deps import get_current_user
 
 router = APIRouter(prefix="/api/conversations", tags=["conversations"])
 

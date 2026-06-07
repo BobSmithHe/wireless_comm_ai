@@ -9,7 +9,7 @@ import re
 import asyncio
 import shutil
 
-from ...config.settings import get_settings
+from ...core.config import get_settings
 from ..observability import observe
 
 settings = get_settings()

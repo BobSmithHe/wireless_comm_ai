@@ -36,6 +36,27 @@ class ConversationMemory:
                 delete_by_source(self._client, tag)
         return insert_memories(self._client, texts, metadatas)
 
+    def index_history(self, messages: list[dict], user_id: int, conversation_id: int) -> int:
+        """Format and store compressed conversation history into Milvus. Returns chunk count."""
+        source_tag = f"compressed_history:{conversation_id}"
+        chunks = []
+        for m in messages:
+            content = m.get("content", "")
+            if content.strip():
+                chunks.append(f"[{m.get('role', 'user')}]: {content[:2000]}")
+        if not chunks:
+            return 0
+        ids = self.add_chunks(
+            texts=chunks,
+            metadatas=[{
+                "source": source_tag,
+                "type": "conversation_memory",
+                "user_id": user_id,
+                "conversation_id": conversation_id,
+            } for _ in chunks],
+        )
+        return len(ids)
+
     @observe(as_type="retriever")
     async def search(self, query: str, user_id: int = 0, top_k: int = 5) -> list[RetrievedDoc]:
         """Search compressed memories scoped to user."""

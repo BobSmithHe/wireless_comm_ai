@@ -2,9 +2,9 @@ from functools import lru_cache
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
-from ..config.database import get_db
-from ..config.settings import get_settings
-from ..core.llm.deepseek_client import DeepSeekClient
+from ..core.config import get_db
+from ..core.config import get_settings
+from ..core.llm.client import DeepSeekClient
 from ..core.rag.knowledge_base import KnowledgeBase
 from ..core.context.conversation_memory import ConversationMemory
 from ..core.code.executor import CodeExecutor

@@ -1,231 +1,206 @@
-# Wireless Communications AI Agent
+# WirelessComm AI
 
-AI Agent system for wireless communications research and engineering.
-
-**Core features**: LLM-driven tool calling (RAG + memory retrieval), Milvus vector database, round-based context compression with vector-indexed memory, Docker sandbox for code execution, PDF paper reading with chat.
+面向无线通信工程师和研究人员的 AI 助手系统。支持 RAG 知识库检索、对话记忆、联网搜索、代码执行。
 
 ---
 
-## Architecture
+## 架构
 
 ```
-                         ┌──────────────────────┐
-                         │   Vue 3 Frontend     │
-                         │   localhost:5178     │
-                         └──────────┬───────────┘
-                                    │ REST / SSE
-                         ┌──────────┴───────────┐
-                         │   FastAPI Backend    │
-                         │                      │
-          ┌──────────────┼──────────────────────┼──────────────┐
-          │              │                      │              │
-          ▼              ▼                      ▼              ▼
-   ChatService      DeepSeekClient       CodeExecutor    KnowledgeBase
-   (agent loop)     (LLM gateway)        (sandbox)       (hybrid RAG)
-          │              │                      │              │
-          └──────────────┼──────────────────────┼──────────────┘
-                         │                      │
-          ┌──────────────┼──────────────┬───────┴──────────┐
-          ▼              ▼              ▼                  ▼
-       MySQL          Milvus          Redis          Docker Sandbox
-    (users/msgs)   (vectors)        (cache)         (code exec)
-```
-
-### Chat Flow (LLM Tool Calling)
-
-```
-User Message
-  │
-  ├─ Compress history (≥10 messages → archive first N-5)
-  │    └─ Archived messages → Milvus (full text) + LLM summary
-  │
-  ├─ LLM decides: need tools?
-  │    ├─ search_knowledge(query) → Milvus knowledge_base (hybrid BM25 + vector)
-  │    ├─ search_memory(query)     → Milvus conversation_memory (vector, user-scoped)
-  │    └─ No tools needed         → return response directly
-  │
-  └─ Tool results injected → LLM synthesizes final answer
-```
-
-### RAG Pipeline (knowledge_base collection)
-
-```
-Query
-  ├─ BM25 sparse search (server-side via Milvus Function)
-  ├─ Dense vector search (BAAI/bge-large-zh-v1.5, 1024-dim)
-  ├─ RRF fusion (reciprocal rank, k=60)
-  └─ Optional: LLM Reranker (ZhipuAI)
-```
-
-### Memory Strategy (conversation_memory collection)
-
-```
-10 messages (5 Q&A pairs)
-  → Archive first 5 messages → Milvus (384-dim all-MiniLM-L6-v2)
-  → Compress into LLM summary → injected as system message
-  → Keep last 5 messages as-is in context
-  → LLM can call search_memory to retrieve archived content
+Vue 3 Frontend (5173)  ──REST/SSE──  FastAPI Backend (8765)
+                                          │
+                    ┌──────────────────────┼──────────────────────┐
+                    │                      │                      │
+              ChatService             DeepSeekClient          CodeExecutor
+           (agent loop + SSE)        (OpenAI-compat)        (Docker sandbox)
+                    │                                             │
+                    ├── KnowledgeBase ── Milvus (hybrid RAG)
+                    ├── ConvMemory ───── Milvus (384-dim)
+                    ├── WebSearch ────── Tavily API
+                    └── MySQL ────────── users / conversations / messages
 ```
 
 ---
 
-## Quick Start
+## 快速开始
 
-### Prerequisites
+### 前提
 
-- Python 3.10+
-- Node.js 18+
-- MySQL 8.0
-- Redis 7
-- Milvus 2.4+
-- Docker (optional, for sandbox)
+- Python 3.10+, Node.js 18+, MySQL 8.0, Redis 7, Milvus 2.4+, Docker（可选）
 
-### Backend
+### 后端
 
 ```bash
 cd backend
 pip install -r requirements.txt
-cp .env.example .env          # edit with your credentials
-python -m uvicorn src.main:app --host 0.0.0.0 --port 8765 --reload
+cp .env.example .env          # 填入 API Key
+python -m uvicorn src.main:app --host 0.0.0.0 --port 8765
 ```
 
-### Frontend
+### 前端
 
 ```bash
 cd frontend
 npm install
-npm run serve                 # → http://localhost:5178
+npm run serve                  # → http://localhost:5173
 ```
 
-### Docker Sandbox (optional)
-
-```bash
-cd backend
-docker build -t wcai-sandbox ./sandbox
-# Set SANDBOX_MODE=docker in backend/.env
-```
-
-### Knowledge Base Import
+### 知识库导入
 
 ```bash
 cd backend
 python -m src.core.rag.insert_data
 ```
 
----
-
-## API Reference
-
-### Auth
-
-| Method | Path | Body | Description |
-|--------|------|------|-------------|
-| POST | `/api/auth/register` | `{username, email, password}` | Register |
-| POST | `/api/auth/login` | `{username, password}` | Login → JWT |
-| GET | `/api/auth/me` | - | Current user |
-
-### Chat
-
-| Method | Path | Body | Description |
-|--------|------|------|-------------|
-| POST | `/api/chat` | `{message, conversation_id?, system_context?}` | Send message (LLM auto-selects tools) |
-| POST | `/api/chat/stream` | `{message, conversation_id?}` | Streaming response (SSE) |
-
-### Conversations
-
-| Method | Path | Params | Description |
-|--------|------|--------|-------------|
-| POST | `/api/conversations` | - | Create conversation |
-| GET | `/api/conversations` | - | List conversations |
-| GET | `/api/conversations/{id}` | `?limit=50&before={msg_id}` | Get messages (paginated, Redis-cached) |
-| DELETE | `/api/conversations/{id}` | - | Delete conversation |
-
-### Knowledge Base
-
-| Method | Path | Params/Body | Description |
-|--------|------|-------------|-------------|
-| GET | `/api/knowledge/search` | `?query=...&top_k=5` | Hybrid search (BM25 + vector) |
-| POST | `/api/knowledge/upload` | FormData `file` (pdf/md/txt/py) | Upload document |
-| GET | `/api/knowledge/papers` | - | List documents |
-| DELETE | `/api/knowledge/papers/{id}` | - | Delete document |
-
-### Papers (PDF reading)
-
-| Method | Path | Body | Description |
-|--------|------|------|-------------|
-| POST | `/api/papers/upload` | FormData `file` (pdf) | Upload + auto-summarize |
-| GET | `/api/papers` | - | List papers |
-| GET | `/api/papers/{id}` | - | Detail + chat history |
-| POST | `/api/papers/{id}/chat` | `{message}` | Chat with paper |
-| DELETE | `/api/papers/{id}` | - | Delete |
-
-### Code Execution
-
-| Method | Path | Body | Description |
-|--------|------|------|-------------|
-| POST | `/api/code/execute` | `{code, language?}` | Execute code (Docker/subprocess), returns images as base64 |
-| POST | `/api/code/generate` | `{description, language?}` | Generate + execute + debug (3 retries) |
-
----
-
-## Configuration
-
-All settings via `backend/.env`:
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `DEEPSEEK_API_KEY` | - | DeepSeek API key (OpenAI-compatible) |
-| `DEEPSEEK_MODEL` | `deepseek-v4-flash` | Model for chat |
-| `MILVUS_URI` | `http://localhost:19530` | Milvus connection |
-| `EMBEDDING_MODEL` | `BAAI/bge-large-zh-v1.5` | Knowledge base embedding model |
-| `EMBEDDING_DIMENSION` | `1024` | Embedding vector dimension |
-| `SANDBOX_MODE` | `subprocess` | `docker` for production isolation |
-| `CONTEXT_COMPRESSION_ENABLED` | `true` | Enable history compression |
-| `CONTEXT_COMPRESSION_TRIGGER_ROUNDS` | `10` | Messages before compression triggers |
-| `CONTEXT_COMPRESSION_KEEP_ROUNDS` | `5` | Recent messages to keep in context |
-| `CONTEXT_COMPRESSION_SUMMARY_MAX_TOKENS` | `500` | Max tokens for LLM summary |
-| `KB_HYBRID_SEARCH` | `true` | BM25 + vector hybrid search |
-| `KB_RERANK_ENABLED` | `true` | ZhipuAI LLM reranker |
-| `KB_CONTEXT_BUDGET_TOKENS` | `2000` | Context packer token budget |
-
----
-
-## Testing
+### Docker 沙箱（代码执行隔离）
 
 ```bash
 cd backend
-pytest tests/ -v
+docker build -t wcai-sandbox ./sandbox
+# .env 中设置 SANDBOX_MODE=docker
 ```
 
 ---
 
-## Project Structure
+## 功能
+
+### 对话
+
+| 功能 | 说明 |
+|------|------|
+| 流式 SSE | 连接→检索→生成→完成，状态实时展示 |
+| 工具调用 | LLM 自主决定 `search_knowledge` / `search_memory` / `search_web` |
+| 前端开关 | 知识库、联网搜索独立控制，记忆始终在线 |
+
+### RAG 知识库
+
+- Milvus 存储，BM25 + 密集向量混合检索
+- BAAI/bge-large-zh-v1.5 (1024维)
+- 支持 PDF/Markdown/文本上传，自动 chunk 分片
+- `auto_id` 主键，重启不冲突
+
+### 记忆系统
+
+- 10 条消息触发压缩，前 N-5 条归档 Milvus，LLM 摘要注入上下文
+- 后 5 条保留原文
+- 记忆检索跨对话，user_id 隔离
+- all-MiniLM-L6-v2 (384维)
+
+### 联网搜索
+
+- Tavily API，前端开关控制
+- LLM 判断是否需要联网
+
+### 代码执行
+
+- Docker 沙箱隔离（无网络、只读文件系统、nobody 用户）
+- 含 CJK 字体（WenQuanYi Micro Hei）
+- 自动纠错重试 (最多3次)
+- matplotlib 图表以 base64 返回
+
+### 数学公式
+
+KaTeX 渲染，支持四种格式：`$$` `\[` `$` `\(`
+
+---
+
+## API
+
+### 对话
 
 ```
-backend/
-├── src/
-│   ├── api/endpoints/       # FastAPI routes (auth, chat, code, knowledge, papers, conversation)
-│   ├── core/
-│   │   ├── context/         # ContextCompressor, ConversationMemory (Milvus-backed)
-│   │   ├── rag/             # KnowledgeBase, SmartMarkdownSplitter, hybrid retrieval
-│   │   ├── code/            # CodeGenerator, CodeDebugger, CodeExecutor (Docker sandbox)
-│   │   ├── llm/             # DeepSeekClient (OpenAI-compatible, tool-calling support)
-│   │   └── observability/   # Langfuse tracing
-│   ├── services/            # ChatService (agent loop + tool orchestration)
-│   ├── config/              # Pydantic settings
-│   ├── database/            # SQLAlchemy models (User, Conversation, Message, Paper)
-│   ├── cache/               # Redis client
-│   ├── utils/               # Logger, password helpers
-│   └── eval/                # RAG evaluation framework
-├── sandbox/                 # Docker sandbox Dockerfile (numpy/scipy/matplotlib + CJK fonts)
-├── data/knowledge_base/     # Preloaded wireless domain documents (markdown)
-└── tests/                   # pytest tests
-frontend/
-├── src/
-│   ├── views/               # Page components (Chat, CodeEditor, Knowledge, Papers, Home, Login)
-│   ├── components/          # HeaderBar, Sidebar, MarkdownBlock
-│   ├── router/              # Vue Router with auth guard
-│   ├── store/               # Pinia auth store
-│   └── api/                 # Axios client with JWT interceptor
-└── package.json
+POST /api/chat/stream
+Body: { message, conversation_id?, use_rag?, use_web? }
+Response: SSE (text/event-stream)
+Events: status → result → answer → done
+```
+
+### 认证
+
+```
+POST /api/auth/register  { username, email, password }
+POST /api/auth/login     { username, password } → { access_token }
+GET  /api/auth/me
+```
+
+### 对话管理
+
+```
+POST   /api/conversations            创建对话
+GET    /api/conversations            列表
+GET    /api/conversations/{id}       消息（支持分页 ?before={msg_id}）
+DELETE /api/conversations/{id}       删除
+```
+
+### 知识库
+
+```
+GET  /api/knowledge/search?query=&top_k=      混合检索
+POST /api/knowledge/upload                      上传文档 (multipart)
+```
+
+### 代码
+
+```
+POST /api/code/execute   { code, language? }  → { stdout, stderr, exit_code, images[] }
+POST /api/code/generate  { description }       → 生成+执行+纠错
+```
+
+### 论文
+
+```
+POST /api/papers/upload     上传 PDF
+GET  /api/papers/{id}       查看 + 对话
+POST /api/papers/{id}/chat  论文问答
+```
+
+---
+
+## 配置
+
+`.env` 关键变量：
+
+| 变量 | 说明 |
+|------|------|
+| `DEEPSEEK_API_KEY` | DeepSeek API Key |
+| `DEEPSEEK_MODEL` | 模型 (deepseek-chat / deepseek-v4-flash) |
+| `TAVILY_API_KEY` | Tavily 联网搜索 (可选) |
+| `MILVUS_URI` | Milvus 地址 |
+| `EMBEDDING_MODEL` | 嵌入模型 (BAAI/bge-large-zh-v1.5) |
+| `SANDBOX_MODE` | docker / subprocess |
+| `CONTEXT_COMPRESSION_TRIGGER_ROUNDS` | 压缩触发消息数 (默认10) |
+
+---
+
+## 项目结构
+
+```
+backend/src/
+├── api/routers/      路由层 (auth, chat, code, knowledge, conversation, papers)
+├── api/deps.py       依赖注入
+├── core/
+│   ├── config.py     配置+数据库+安全
+│   ├── llm/          client.py (DeepSeekClient) + prompts.py
+│   ├── code/         代码执行/生成/纠错
+│   ├── context/      对话压缩+记忆存储
+│   ├── rag/          Milvus 知识库+混合检索
+│   └── observability/ Langfuse 追踪
+├── services/         业务逻辑层 (chat, code, auth)
+├── models/           SQLAlchemy 模型
+└── main.py           FastAPI 入口
+
+frontend/src/
+├── views/            Chat, CodeEditor, Knowledge, Papers, Home, Login, Register
+├── components/       HeaderBar, Sidebar, MarkdownBlock
+├── router/           Vue Router + auth guard
+├── store/            Pinia
+└── api/              Axios + JWT
+```
+
+---
+
+## 测试
+
+```bash
+cd backend && pytest tests/ -v
 ```

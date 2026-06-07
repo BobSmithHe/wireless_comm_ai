@@ -1,5 +1,5 @@
 import redis.asyncio as aioredis
-from ..config.settings import get_settings
+from ..core.config import get_settings
 
 settings = get_settings()
 _redis_pool: aioredis.Redis | None = None

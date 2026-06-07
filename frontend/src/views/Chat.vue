@@ -15,48 +15,22 @@
         <div v-if="hasMore" class="load-more" @click="loadMoreMessages">加载更早的消息</div>
 
         <template v-for="msg in messages" :key="msg._key">
-          <!-- Tool messages: collapsible thinking process -->
-          <div v-if="msg.role === 'tool' || msg.role === 'tool_result'" class="thinking-group">
-            <div v-if="msg.role === 'tool'" class="thinking-toggle" @click="toggleThinking(msg._key)">
-              <span>{{ toolLabel(msg.content) }}</span>
-              <span class="toggle-arrow">{{ thinkingOpen[msg._key] !== false ? '▼' : '▶' }}</span>
-            </div>
-            <div v-show="thinkingOpen[msg._key] !== false" class="thinking-body">
-              <div class="message-content" v-html="msg._html"></div>
-            </div>
-          </div>
-
-          <!-- Regular messages -->
-          <div v-else :class="['message', msg.role]">
+          <div v-if="msg.role !== 'tool' && msg.role !== 'tool_result'" :class="['message', msg.role]">
             <div class="message-content" v-html="msg._html"></div>
-            <div v-if="msg.execResults && msg.execResults.length" class="exec-results">
-              <div v-for="(er, ei) in msg.execResults" :key="ei" class="exec-result-item">
-                <div class="exec-result-header">
-                  <span :style="{ color: er.exitCode === 0 ? '#67c23a' : '#f56c6c' }">
-                    {{ er.exitCode === 0 ? '执行成功' : '执行失败' }}
-                    <template v-if="er.attempt">(第{{ er.attempt }}次)</template> ({{ er.execTimeMs }}ms)
-                  </span>
-                </div>
-                <div v-if="er.images && er.images.length" class="exec-images">
-                  <img v-for="(img, ii) in er.images" :key="ii" :src="'data:image/png;base64,' + img" class="exec-image" @click="previewImage(img)" @error="(e) => e.target.style.display = 'none'" />
-                </div>
-                <pre v-if="er.stdout" class="exec-stdout">{{ er.stdout }}</pre>
-                <pre v-if="er.stderr" class="exec-stderr">{{ er.stderr }}</pre>
-              </div>
-            </div>
           </div>
         </template>
 
-        <div v-if="loadingConvId === currentConvId" class="message assistant">
-          <div class="message-content"><em>思考中...</em></div>
-        </div>
       </div>
       <div class="chat-input">
-        <el-input v-model="input" placeholder="请输入无线通信相关问题..." @keyup.enter="sendMessage" :disabled="loading">
-          <template #append>
-            <el-button @click="sendMessage" :loading="loading" type="primary">发送</el-button>
-          </template>
-        </el-input>
+        <div class="input-row">
+          <el-switch v-model="ragEnabled" active-text="知识库" size="small" style="margin-right:8px" />
+            <el-switch v-model="webEnabled" active-text="联网" size="small" style="margin-right:8px" />
+          <el-input v-model="input" placeholder="请输入无线通信相关问题..." @keyup.enter="sendMessage" :disabled="loading">
+            <template #append>
+              <el-button @click="sendMessage" :loading="loading" type="primary">发送</el-button>
+            </template>
+          </el-input>
+        </div>
       </div>
     </el-card>
 
@@ -73,15 +47,17 @@ import { marked } from "marked";
 import katex from "katex";
 import "katex/dist/katex.min.css";
 import api from "../api";
+import { useRouter, useRoute } from "vue-router";
 
 const input = ref("");
+const ragEnabled = ref(true);
+const webEnabled = ref(false);
 const messages = ref([]);
 const loadingConvId = ref(null);
 const loading = computed(() => loadingConvId.value !== null);
 const messagesContainer = ref(null);
-const codeMap = {};
-const executingKeys = ref(new Set());
-const thinkingOpen = ref({}); // key → bool for collapsible thinking groups
+const router = useRouter();
+const route = useRoute();
 const previewSrc = ref(null);
 const conversations = ref([]);
 const currentConvId = ref(null);
@@ -91,8 +67,15 @@ let msgUid = 0;
 
 onMounted(async () => {
   await loadConversations();
-  if (conversations.value.length) await switchConversation(conversations.value[0].id);
-  else await newConversation();
+  const q = route.query.q;
+  if (q) {
+    if (!conversations.value.length) await newConversation();
+    input.value = q;
+  } else if (conversations.value.length) {
+    await switchConversation(conversations.value[0].id);
+  } else {
+    await newConversation();
+  }
 });
 
 // ---- Conversations ----
@@ -107,41 +90,16 @@ async function newConversation() {
     messages.value = [];
   } catch { ElMessage.error("创建对话失败"); }
 }
-async function fetchToolMessages(convId) {
-  try {
-    const res = await api.get(`/api/conversations/${convId}`, { params: { limit: 50 } });
-    const existingContents = new Set(messages.value.map(m => m.content));
-    const toolMsgs = [];
-    for (const m of res.data.messages) {
-      if ((m.role === 'tool' || m.role === 'tool_result') && !existingContents.has(m.content)) {
-        toolMsgs.push({
-          _key: ++msgUid, role: m.role, content: m.content,
-          _html: renderHtml(m.content, msgUid), execResults: [],
-        });
-        existingContents.add(m.content);
-      }
-    }
-    if (toolMsgs.length > 0) {
-      // Insert tool messages before the last assistant message (correct chronological order)
-      let insertAt = messages.value.length;
-      for (let i = messages.value.length - 1; i >= 0; i--) {
-        if (messages.value[i].role === 'assistant') { insertAt = i; break; }
-      }
-      const updated = [...messages.value];
-      updated.splice(insertAt, 0, ...toolMsgs);
-      messages.value = updated;
-      await nextTick(); scrollToBottom();
-    }
-  } catch {}
-}
 async function switchConversation(id) {
   currentConvId.value = id; hasMore.value = false; oldestMsgId.value = null;
   try {
     const res = await api.get(`/api/conversations/${id}`, { params: { limit: 50 } });
-    messages.value = res.data.messages.map((m) => ({
-      _key: ++msgUid, role: m.role, content: m.content,
-      _html: renderHtml(m.content, msgUid), execResults: [],
-    }));
+    messages.value = res.data.messages
+      .filter(m => m.role !== "system")
+      .map((m) => ({
+        _key: ++msgUid, role: m.role, content: m.content,
+        _html: renderHtml(m.content, msgUid), execResults: [],
+      }));
     hasMore.value = res.data.has_more;
     if (res.data.messages.length > 0) oldestMsgId.value = res.data.messages[0].id;
     await nextTick(); scrollToBottom();
@@ -151,11 +109,12 @@ async function loadMoreMessages() {
   if (!hasMore.value || !oldestMsgId.value) return;
   try {
     const res = await api.get(`/api/conversations/${currentConvId.value}`, { params: { before: oldestMsgId.value, limit: 50 } });
-    const older = res.data.messages.map((m) => ({
-      _key: ++msgUid, role: m.role, content: m.content,
-      _html: renderHtml(m.content, msgUid), execResults: [],
-      _thinkingOpen: m.role === 'tool',
-    }));
+    const older = res.data.messages
+      .filter(m => m.role !== "system")
+      .map((m) => ({
+        _key: ++msgUid, role: m.role, content: m.content,
+        _html: renderHtml(m.content, msgUid), execResults: [],
+      }));
     messages.value = [...older, ...messages.value];
     hasMore.value = res.data.has_more;
     if (res.data.messages.length > 0) oldestMsgId.value = res.data.messages[0].id;
@@ -174,111 +133,37 @@ async function deleteConversation(id) {
 
 // ---- Rendering ----
 function escapeHtml(t) { return t.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
-function renderHtml(raw, msgIdx) {
-  if (!raw) return "";
-  Object.keys(codeMap).forEach((k) => { if (codeMap[k].msgIdx === msgIdx) delete codeMap[k]; });
-  let blockIdx = 0, remaining = raw;
-  remaining = remaining.replace(/```(\w*)\n([\s\S]*?)```/g, (_, lang, code) => {
-    const key = `c_${msgIdx}_${blockIdx++}`;
-    codeMap[key] = { code: code.trim(), msgIdx };
-    const esc = escapeHtml(code.trim()), ln = lang || "text";
-    const isPython = ln === "python" || ln === "py";
-    const runBtn = isPython
-      ? `<button class="run-code-btn" data-key="${key}">▶ 运行</button>`
-      : "";
-    return `<div class="code-block-wrapper"><div class="code-block-header"><span>${escapeHtml(ln)}</span><div class="code-block-actions"><button class="copy-code-btn" data-key="${key}">复制</button>${runBtn}</div></div><pre><code class="language-${escapeHtml(ln)}">${esc}</code></pre></div>`;
+function renderMarkdown(text, withKatex) {
+  text = text.replace(/\t/g, '    ');
+  if (withKatex) {
+    text = text.replace(/\$\$([\s\S]*?)\$\$/g, (_,f) => { try { return katex.renderToString(f.trim(),{displayMode:true,throwOnError:false}); } catch { return '<pre>'+escapeHtml(f)+'</pre>'; }});
+    text = text.replace(/\\\[([\s\S]*?)\\\]/g, (_,f) => { try { return katex.renderToString(f.trim(),{displayMode:true,throwOnError:false}); } catch { return '<pre>'+escapeHtml(f)+'</pre>'; }});
+    text = text.replace(/(?<!\$)\$(?!\$)([^$]+?)\$(?!\$)/g, (_,f) => { try { return katex.renderToString(f.trim(),{displayMode:false,throwOnError:false}); } catch { return escapeHtml(f); }});
+    text = text.replace(/\\\(([\s\S]*?)\\\)/g, (_,f) => { try { return katex.renderToString(f.trim(),{displayMode:false,throwOnError:false}); } catch { return escapeHtml(f); }});
+  }
+  var html = marked.parse(text);
+  var re = new RegExp('<pre><code( class="language-(\\w+)")?>([\\s\\S]*?)</code></pre>', 'g');
+  html = html.replace(re, function(_, cls, lang, code) {
+    var ln = lang || "text";
+    var ta = document.createElement("textarea");
+    ta.innerHTML = code;
+    var decoded = ta.value;
+    var isPython = ln === "python" || ln === "py";
+    var escCode = encodeURIComponent(decoded.trim());
+    var runBtn = isPython ? '<button class="run-code-btn" data-code="'+escCode+'">▶ 运行</button>' : '';
+    return '<div class="code-block-wrapper"><div class="code-block-header"><span>'+escapeHtml(ln)+'</span><div class="code-block-actions"><button class="copy-code-btn" data-code="'+escCode+'">复制</button>'+runBtn+'</div></div><pre><code class="language-'+escapeHtml(ln)+'">'+code+'</code></pre></div>';
   });
-  remaining = remaining.replace(/`([^`]+)`/g, (_,c) => `<code>${escapeHtml(c)}</code>`);
-  remaining = remaining.replace(/\$\$([\s\S]*?)\$\$/g, (_,f) => { try { return katex.renderToString(f.trim(),{displayMode:true,throwOnError:false}); } catch { return `<pre>${escapeHtml(f)}</pre>`; }});
-  remaining = remaining.replace(/(?<!\$)\$(?!\$)([^$]+?)\$(?!\$)/g, (_,f) => { try { return katex.renderToString(f.trim(),{displayMode:false,throwOnError:false}); } catch { return escapeHtml(f); }});
-  return marked.parse(remaining);
+  return html;
+}
+
+function renderHtml(raw, msgIdx) {
+  if (!raw) return '';
+  return renderMarkdown(raw, true);
 }
 function addLocalMessage(role, content) {
-  const m = { _key: ++msgUid, role, content, _html: renderHtml(content, msgUid), execResults: [] };
+  const m = { _key: ++msgUid, role, content, _html: renderHtml(content || "", msgUid), execResults: [] };
   messages.value = [...messages.value, m];
   return m;
-}
-
-// ---- Code execution ----
-function extractCodeBlock(t) { const m = t.match(/```\w*\n([\s\S]*?)```/); return m ? m[1].trim() : null; }
-function toolLabel(content) {
-  if (!content) return '🔧 思考过程';
-  if (content.includes('知识库检索')) return '📚 知识库检索';
-  if (content.includes('记忆检索')) return '🧠 记忆检索';
-  if (content.includes('历史检索')) return '📜 历史检索';
-  if (content.includes('Agent')) return '🤖 Agent 规划';
-  if (content.includes('代码执行') || content.includes('工具调用')) return '💻 代码执行';
-  return '🔧 思考过程';
-}
-function toggleThinking(key) { thinkingOpen.value = { ...thinkingOpen.value, [key]: thinkingOpen.value[key] === false ? true : false }; }
-
-async function handleCodeClick(event) {
-  const copyBtn = event.target.closest(".copy-code-btn");
-  if (copyBtn) {
-    const e = codeMap[copyBtn.dataset.key];
-    if (e) { try { await navigator.clipboard.writeText(e.code); } catch { const ta=document.createElement("textarea");ta.value=e.code;document.body.appendChild(ta);ta.select();document.execCommand("copy");document.body.removeChild(ta); } ElMessage.success("已复制"); }
-    return;
-  }
-  const btn = event.target.closest(".run-code-btn");
-  if (!btn) return;
-  const key = btn.dataset.key, entry = codeMap[key];
-  if (!entry) return;
-  const msg = messages.value.find((m) => m._key === entry.msgIdx);
-  if (!msg || executingKeys.value.has(key)) return;
-  executingKeys.value = new Set([...executingKeys.value, key]);
-
-  let currentCode = entry.code;
-  const maxRetries = 3, startTime = Date.now();
-  // Show thinking process immediately
-  const thinkingMsg = addLocalMessage("tool", `[工具调用 代码执行]\n\`\`\`python\n${currentCode}\n\`\`\``);
-  const resultMsg = addLocalMessage("tool_result", "运行中...");
-
-  for (let attempt = 0; attempt <= maxRetries; attempt++) {
-    try {
-      const res = await api.post("/api/code/execute", { code: currentCode, language: "python" });
-      // Update result in place
-      resultMsg.content = res.data.stdout ? `[执行结果]\n\`\`\`\n${res.data.stdout}\n\`\`\`` : `[执行错误]\n\`\`\`\n${res.data.stderr}\n\`\`\``;
-      resultMsg._html = renderHtml(resultMsg.content, resultMsg._key);
-      messages.value = [...messages.value];
-      const execResult = { stdout: res.data.stdout || "", stderr: res.data.stderr || "", exitCode: res.data.exit_code ?? -1, execTimeMs: Date.now() - startTime, attempt: attempt + 1, images: res.data.images || [] };
-      console.log('[IMG-DEBUG] images field:', res.data.images?.length, 'type:', typeof res.data.images?.[0], 'prefix:', String(res.data.images?.[0]).substring(0, 40));
-      msg.execResults.push(execResult);
-      messages.value = [...messages.value];
-      console.log('[IMG-DEBUG] pushed to msg.execResults, total:', msg.execResults.length, 'last images:', msg.execResults[msg.execResults.length-1]?.images?.length);
-
-      // Save tool result to conversation
-      api.post(`/api/conversations/${currentConvId.value}/tool`, {
-        code: currentCode, language: "python",
-        stdout: res.data.stdout || "", stderr: res.data.stderr || "",
-        exit_code: res.data.exit_code ?? -1, attempt: attempt + 1,
-      }).catch(() => {});
-
-      if (res.data.exit_code === 0) {
-        addLocalMessage("system", `代码执行成功 (第${attempt + 1}次):\n${res.data.stdout}`);
-        break;
-      }
-      if (attempt < maxRetries) {
-        try {
-          const fixRes = await api.post("/api/chat", {
-            message: `代码执行错误，请修正：\n${res.data.stderr.slice(0,500)}`,
-            conversation_id: currentConvId.value,
-          });
-          const fixedCode = extractCodeBlock(fixRes.data.response);
-          if (fixedCode) { currentCode = fixedCode;
-            thinkingMsg.content = `[工具调用 第${attempt+2}次]\n\`\`\`python\n${fixedCode}\n\`\`\``;
-            thinkingMsg._html = renderHtml(thinkingMsg.content, thinkingMsg._key);
-            resultMsg.content = "运行中..."; resultMsg._html = renderHtml("运行中...", resultMsg._key);
-            messages.value=[...messages.value]; await nextTick(); scrollToBottom(); }
-          else { addLocalMessage("system","Agent 未能生成有效修正代码。"); break; }
-        } catch { addLocalMessage("system","自动修正请求失败。"); break; }
-      } else { addLocalMessage("system",`已重试${maxRetries}次仍未成功。`); }
-    } catch (e) {
-      msg.execResults.push({ stdout:"", stderr:e.message||"网络错误", exitCode:-1, execTimeMs:Date.now()-startTime, attempt:attempt+1 });
-      messages.value=[...messages.value]; break;
-    }
-  }
-  executingKeys.value = new Set([...executingKeys.value].filter((k) => k !== key));
-  await nextTick(); scrollToBottom();
 }
 
 // ---- Chat ----
@@ -287,21 +172,78 @@ async function sendMessage() {
   if (!text) return;
   addLocalMessage("user", text);
   input.value = "";
+  // Clear homepage tag from URL
+  if (route.query.q) router.replace({ query: {} });
   const thisConvId = currentConvId.value;
   loadingConvId.value = thisConvId;
+
+  // Add a status message that will be updated during streaming
+  // Remove old status messages from previous responses
+  messages.value = messages.value.filter(m => m.role !== "system");
+  const statusMsg = addLocalMessage("system", "尝试连接...");
+
   try {
-    const res = await api.post("/api/chat", { message: text, conversation_id: thisConvId });
-    if (currentConvId.value === thisConvId) {
-      addLocalMessage("assistant", res.data.response);
-      // Fetch tool messages (thinking process) saved by backend during agent execution
-      await fetchToolMessages(thisConvId);
+    const token = localStorage.getItem("access_token");
+    const resp = await fetch("/api/chat/stream", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Authorization": `Bearer ${token}` },
+      body: JSON.stringify({ message: text, conversation_id: thisConvId, use_rag: ragEnabled.value, use_web: webEnabled.value }),
+    });
+
+    if (!resp.ok) throw new Error(`请求失败: ${resp.status}`);
+    if (!resp.body) throw new Error("响应体为空");
+
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let sseBuffer = "";
+    let fullAnswer = "";
+    let assistantMsg = null;
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      sseBuffer += decoder.decode(value, { stream: true });
+      const events = sseBuffer.split("\n\n");
+      sseBuffer = events.pop() || "";
+
+      let touched = false;
+      for (const evt of events) {
+        const dataLine = evt.split("\n").find(l => l.startsWith("data: "));
+        if (!dataLine) continue;
+        try {
+          const data = JSON.parse(dataLine.slice(6));
+          console.log('[SSE]', data.event, data.content?.substring(0, 60));
+          if (data.event === "status" || data.event === "result") {
+            statusMsg.content = (statusMsg.content || "") + "\n\n" + data.content;
+            statusMsg._html = renderHtml(statusMsg.content, statusMsg._key);
+            messages.value = [...messages.value];
+            touched = true;
+          } else if (data.event === "answer") {
+            fullAnswer += data.content;
+            if (!assistantMsg) assistantMsg = addLocalMessage("assistant", "");
+            assistantMsg._html = renderMarkdown(fullAnswer, false);
+            assistantMsg.content = fullAnswer;
+            messages.value = [...messages.value];
+            touched = true;
+          } else if (data.event === "done") {
+            if (assistantMsg) {
+              assistantMsg._html = renderHtml(fullAnswer, assistantMsg._key);
+              assistantMsg.content = fullAnswer;
+            }
+            if (statusMsg.content) statusMsg._html = renderHtml(statusMsg.content, statusMsg._key);
+            messages.value = [...messages.value];
+          }
+        } catch {}
+      }
+      if (touched) { await nextTick(); scrollToBottom(); }
     }
     await loadConversations();
   } catch (e) {
     if (currentConvId.value === thisConvId) {
-      if (e.code === "ECONNABORTED") ElMessage.error("请求超时，请重试");
-      else if (e.response?.data?.detail) ElMessage.error(e.response.data.detail);
-      else ElMessage.error("请求失败: " + (e.message || "未知错误"));
+      statusMsg.content = "请求失败";
+      statusMsg._html = renderHtml("请求失败: " + (e.message || "未知错误"), statusMsg._key);
+      messages.value = [...messages.value];
     }
   } finally {
     if (loadingConvId.value === thisConvId) loadingConvId.value = null;
@@ -309,6 +251,23 @@ async function sendMessage() {
   }
 }
 
+function handleCodeClick(event) {
+  const copyBtn = event.target.closest(".copy-code-btn");
+  if (copyBtn) {
+    const code = decodeURIComponent(copyBtn.dataset.code || "");
+    try { navigator.clipboard.writeText(code); } catch {
+      const ta = document.createElement("textarea"); ta.value = code;
+      document.body.appendChild(ta); ta.select(); document.execCommand("copy"); document.body.removeChild(ta);
+    }
+    ElMessage.success("已复制");
+    return;
+  }
+  const runBtn = event.target.closest(".run-code-btn");
+  if (runBtn && runBtn.dataset.code) {
+    router.push(`/code?code=${runBtn.dataset.code}`);
+    return;
+  }
+}
 function previewImage(b64) { previewSrc.value = "data:image/png;base64," + b64; }
 function scrollToBottom() { if (messagesContainer.value) messagesContainer.value.scrollTop = messagesContainer.value.scrollHeight; }
 </script>
@@ -331,23 +290,19 @@ function scrollToBottom() { if (messagesContainer.value) messagesContainer.value
 .load-more:hover { color: #409eff; text-decoration: underline; }
 .load-more:hover { color: #409eff; text-decoration: underline; }
 
-.message { margin-bottom: 16px; }
-.message.user .message-content { background: #409eff; color: #fff; margin-left: auto; max-width: 70%; border-radius: 12px 12px 4px 12px; }
+.message { margin-bottom: 16px; display: flex; flex-direction: column; }
+.message.user { align-items: flex-end; }
+.message.user .message-content { background: #409eff; color: #fff; max-width: 70%; border-radius: 12px 12px 4px 12px; }
 .message.assistant .message-content { background: #f0f0f0; max-width: 85%; border-radius: 12px 12px 12px 4px; }
 .message.system .message-content { background: #f0f9eb; border: 1px solid #b3e19d; max-width: 85%; border-radius: 12px 12px 12px 4px; font-size: 13px; }
 .message-content { display: inline-block; padding: 10px 14px; font-size: 14px; line-height: 1.6; }
 .message-content :deep(p) { margin: 4px 0; }
+.message-content :deep(ul), .message-content :deep(ol) { padding-left: 18px; }
+.message-content :deep(li) { list-style-position: outside; }
 .message-content :deep(.katex-display) { margin: 8px 0; overflow-x: auto; }
 .chat-input { padding: 12px 16px; border-top: 1px solid #eee; background: #fff; position: sticky; bottom: 0; z-index: 10; }
-
-/* Tool / thinking process */
-.thinking-group { margin-bottom: 12px; }
-.thinking-toggle { cursor: pointer; padding: 8px 12px; background: #fafafa; border: 1px solid #e8e8e8; border-radius: 8px; font-size: 13px; color: #666; display: flex; justify-content: space-between; user-select: none; }
-.thinking-toggle:hover { background: #f0f0f0; }
-.toggle-arrow { font-size: 11px; }
-.thinking-body { padding: 8px 12px; border-left: 3px solid #e8e8e8; margin-left: 8px; }
-.thinking-body .message-content { background: #fafafa; border: 1px solid #eee; font-size: 13px; }
-.thinking-body :deep(.code-block-actions) { display: none; }
+.input-row { display: flex; align-items: center; }
+.input-row :deep(.el-switch__label) { white-space: nowrap; }
 
 /* Code blocks in chat */
 .message-content :deep(.code-block-wrapper) { margin: 8px 0; border: 1px solid #d0d7de; border-radius: 6px; overflow: hidden; background: #f6f8fa; }

@@ -10,7 +10,7 @@ from typing import Any
 
 from langfuse import Langfuse, observe as _observe, propagate_attributes
 
-from ...config.settings import get_settings
+from ...core.config import get_settings
 from ...utils.logger import logger
 
 _client: Langfuse | None = None

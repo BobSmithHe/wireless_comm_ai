@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from ...services.code_service import CodeService
-from ..dependencies import get_current_user, get_code_service
+from ..deps import get_current_user, get_code_service
 
 router = APIRouter(prefix="/api/code", tags=["code"])
 

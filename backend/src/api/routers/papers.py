@@ -11,10 +11,10 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from ...core.rag.document_loader import DocumentLoader
-from ...core.llm.deepseek_client import DeepSeekClient
-from ...config.database import get_db
+from ...core.llm.client import DeepSeekClient
+from ...core.config import get_db
 from ...database.models import Paper, PaperMessage
-from ..dependencies import get_current_user, get_llm
+from ..deps import get_current_user, get_llm
 
 router = APIRouter(prefix="/api/papers", tags=["papers"])
 

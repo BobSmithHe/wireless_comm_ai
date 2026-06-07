@@ -4,11 +4,7 @@ import logging
 import requests
 from pymilvus import MilvusClient
 from .milvus_store import _get_dense_model, COLLECTION_NAME
-
-# Rerank defaults (not used by default — KnowledgeBase handles reranking)
-ZHIPU_API_KEY = "0d9b8fb9184241d091a83d01e61ac394.K0f8fpyIKH2LVmHW"
-ZHIPU_RERANK_URL = "https://open.bigmodel.cn/api/paas/v4/rerank"
-ZHIPU_RERANK_MODEL = "rerank"
+from ...core.config import get_settings
 
 logger = logging.getLogger(__name__)
 
@@ -103,22 +99,23 @@ def llm_rerank(query: str, hits: list[dict], top_k: int = 10) -> list[dict]:
 
     documents = [h["entity"].get("content", "")[:2000] for h in candidates]
 
-    if not ZHIPU_API_KEY or not ZHIPU_RERANK_URL:
+    s = get_settings()
+    if not s.zhipu_api_key or not s.zhipu_rerank_url:
         for h in candidates:
             h["llm_score"] = 1.0
         return candidates
 
     try:
         resp = requests.post(
-            ZHIPU_RERANK_URL,
+            s.zhipu_rerank_url,
             json={
-                "model": ZHIPU_RERANK_MODEL,
+                "model": s.zhipu_rerank_model,
                 "query": query,
                 "documents": documents,
                 "top_n": len(candidates),
             },
             headers={
-                "Authorization": f"Bearer {ZHIPU_API_KEY}",
+                "Authorization": f"Bearer {s.zhipu_api_key}",
                 "Content-Type": "application/json",
             },
             timeout=30,

@@ -31,8 +31,8 @@
       <el-col :span="24">
         <el-card shadow="hover" class="feature-card">
           <h3>支持领域</h3>
-          <el-tag v-for="fact in quickFacts" :key="fact" style="margin: 4px">{{ fact }}</el-tag>
-          <p style="margin-top: 12px">点击进入对话，深入探索以上话题。</p>
+          <el-tag v-for="fact in quickFacts" :key="fact" style="margin: 4px; cursor: pointer" @click="$router.push('/chat?q=' + encodeURIComponent(fact))">{{ fact }}</el-tag>
+          <p style="margin-top: 12px">点击话题标签，直接开始对话。</p>
         </el-card>
       </el-col>
     </el-row>

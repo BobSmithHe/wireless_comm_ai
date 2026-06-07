@@ -198,3 +198,29 @@ class ContextCompressor:
             content = m.get("content", "")[:2000]
             lines.append(f"[{role}]: {content}")
         return "\n\n".join(lines)
+
+    def compress_by_rounds(
+        self, history: list[dict] | None, trigger_count: int, keep_count: int,
+    ) -> tuple[list[dict] | None, list[dict] | None, dict | None]:
+        """Round-based compression: archive first N-keep, keep last keep.
+        Returns (to_archive, recent, metadata) or (None, None, None) if no compression."""
+        if not history or len(history) < trigger_count:
+            return None, None, None
+        to_archive = history[:-keep_count] if keep_count > 0 else history
+        recent = history[-keep_count:] if keep_count > 0 else []
+        if not to_archive:
+            return None, None, None
+        return to_archive, recent, {
+            "compression_was_compressed": True,
+            "compression_archived_msgs": len(to_archive),
+            "compression_kept_msgs": len(recent),
+            "total_msgs": len(history),
+        }
+
+    @staticmethod
+    def fallback_summary(messages: list[dict]) -> str:
+        parts = []
+        for m in messages[:20]:
+            content = m.get("content", "")
+            parts.append(f"[{m.get('role', '?')}]: {content[:200]}")
+        return "\n".join(parts)

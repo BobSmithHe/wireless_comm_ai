@@ -1,9 +1,9 @@
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from .config.settings import get_settings
+from .core.config import get_settings
 from .utils.logger import logger
-from .api.endpoints import auth, chat, code, knowledge, conversation, papers
+from .api.routers import auth, chat, code, knowledge, conversation, papers
 
 settings = get_settings()
 
@@ -17,7 +17,7 @@ async def lifespan(app: FastAPI):
     init_langfuse()
 
     # Auto-create database tables
-    from .config.database import engine, Base
+    from .core.config import engine, Base
     from .database.models import User, Conversation, Knowledge, Paper, PaperMessage, Project  # noqa: F811
     Base.metadata.create_all(bind=engine)
     logger.info("Database tables verified")

@@ -15,14 +15,14 @@ _dense_model = None
 def _get_dense_model() -> SentenceTransformer:
     global _dense_model
     if _dense_model is None:
-        from ...config.settings import get_settings
+        from ...core.config import get_settings
         s = get_settings()
         _dense_model = SentenceTransformer(s.embedding_model, device=s.embedding_device)
     return _dense_model
 
 
 def _get_dense_dim() -> int:
-    from ...config.settings import get_settings
+    from ...core.config import get_settings
     return get_settings().embedding_dimension
 
 

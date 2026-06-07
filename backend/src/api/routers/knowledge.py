@@ -6,8 +6,8 @@ from fastapi import APIRouter, Depends, Query, UploadFile, File, HTTPException
 
 from ...core.rag.knowledge_base import KnowledgeBase
 from ...core.rag.document_loader import DocumentLoader
-from ...config.settings import get_settings
-from ..dependencies import get_current_user, get_kb
+from ...core.config import get_settings
+from ..deps import get_current_user, get_kb
 
 router = APIRouter(prefix="/api/knowledge", tags=["knowledge"])
 

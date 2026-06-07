@@ -36,3 +36,5 @@ docker-compose.override.yml
 *secret*
 *.pem
 identifier.sqlite
+logs/*.log
+*.db

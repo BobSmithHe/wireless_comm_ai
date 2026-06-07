@@ -52,12 +52,13 @@
 
 <script setup>
 import { ref, computed, onMounted } from "vue";
-import { useRouter } from "vue-router";
+import { useRouter, useRoute } from "vue-router";
 import { ElMessage } from "element-plus";
 import api from "../api";
 import { useCodeStore } from "../store";
 
 const router = useRouter();
+const route = useRoute();
 const codeStore = useCodeStore();
 
 const code = ref("");
@@ -90,7 +91,10 @@ print(f"SNR: {snr_db} dB")
 print(f"BER: {errors/n_bits:.4e}")`;
 
 onMounted(async () => {
-  if (codeStore.pendingCode) {
+  const routeCode = route.query.code;
+  if (routeCode) {
+    code.value = routeCode;
+  } else if (codeStore.pendingCode) {
     code.value = codeStore.pendingCode;
     await executeCode();
   } else {

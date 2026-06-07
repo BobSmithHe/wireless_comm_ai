@@ -1,6 +1,6 @@
 from sqlalchemy.orm import Session
 from ..database.models import User
-from ..config.security import hash_password, verify_password, create_access_token, create_refresh_token, decode_token
+from ..core.config import hash_password, verify_password, create_access_token, create_refresh_token, decode_token
 from ..utils.logger import logger
 
 
