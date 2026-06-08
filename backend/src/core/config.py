@@ -50,10 +50,6 @@ class Settings(BaseSettings):
     milvus_token: str = ""
     milvus_db_name: str = "milvus_database"
 
-    chroma_persist_dir: str = "./data/chroma"
-    chroma_host: str = ""
-    chroma_port: int = 8000
-
     embedding_model: str = "BAAI/bge-large-zh-v1.5"
     embedding_dimension: int = 1024
     embedding_device: str = "cpu"
@@ -77,7 +73,7 @@ class Settings(BaseSettings):
     code_exec_max_memory: str = "256m"
     sandbox_mode: str = "subprocess"
 
-    kb_data_dir: str = "./data/knowledge_base"
+    kb_data_dir: str = "./data/textbook"
     kb_chunk_size: int = 1000
     kb_chunk_overlap: int = 200
     kb_max_upload_size_mb: int = 50

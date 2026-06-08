@@ -14,7 +14,7 @@ RAG_TOOLS = [
         "type": "function",
         "function": {
             "name": "search_knowledge",
-            "description": "搜索本地无线通信专业知识库（3GPP规范、算法、协议等）。当用户询问技术问题时优先使用。",
+            "description": "搜索本地无线通信专业知识库（中文教材、英文3GPP协议等）。当用户询问技术问题时使用。",
             "parameters": {
                 "type": "object",
                 "properties": {

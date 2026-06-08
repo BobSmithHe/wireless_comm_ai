@@ -107,7 +107,7 @@ class KnowledgeBase:
         if stats["row_count"] == 0:
             return []
 
-        n_candidates = max(top_k * 4, 20)
+        n_candidates = max(top_k * 6, 30)
 
         if mode == "vector":
             hits = search_dense(client, query, topk=top_k)

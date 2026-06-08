@@ -82,10 +82,10 @@ class ChatService:
                 yield f'data: {{"event":"status","content":"{label}: {query}"}}\n\n'
 
                 if name == "search_knowledge":
-                    results = await self.kb.search(query, top_k=3)
+                    results = await self.kb.search(query, top_k=5)
                     if results:
-                        lines = ["{} (相关度 {:.0%})".format(r.source or "文档", r.score) for r in results[:3]]
-                        yield 'data: {{"event":"result","content":"找到 {} 条: {}"}}\n\n'.format(len(results), " | ".join(lines))
+                        lines = ["{} (相关度 {:.0%})".format(r.source or "文档", r.score) for r in results[:5]]
+                        yield 'data: {{"event":"result","content":"找到 {} 条: {}"}}\n\n'.format(len(results), " | ".join(lines[:3]))
                         tool_output = "\n\n".join(
                             f"[{r.source}] (score={r.score:.2f})\n{r.content[:1000]}"
                             for r in results

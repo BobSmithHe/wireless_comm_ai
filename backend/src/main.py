@@ -31,24 +31,24 @@ async def lifespan(app: FastAPI):
 def _preload_knowledge_base(kb) -> None:
     """Import knowledge base documents on startup."""
     import os
-    data_dir = os.path.join(os.path.dirname(__file__), "..", "data", "knowledge_base")
-    if not os.path.isdir(data_dir):
-        logger.warning(f"Knowledge base directory not found: {data_dir}")
-        return
-
+    base = os.path.join(os.path.dirname(__file__), "..", "data")
     count = 0
-    for root, dirs, files in os.walk(data_dir):
-        for fname in files:
-            if fname.endswith((".md", ".txt")):
-                filepath = os.path.join(root, fname)
-                with open(filepath, "r", encoding="utf-8") as f:
-                    content = f.read()
-                ids = kb.add_documents(
-                    texts=[content],
-                    metadatas=[{"source": fname, "category": os.path.basename(root)}],
-                )
-                count += len(ids)
-    logger.info(f"Knowledge base loaded: {count} chunks from {data_dir}")
+    for folder in ("textbook", "protocol"):
+        data_dir = os.path.join(base, folder)
+        if not os.path.isdir(data_dir):
+            continue
+        for root, dirs, files in os.walk(data_dir):
+            for fname in files:
+                if fname.endswith((".md", ".txt", ".pdf")):
+                    filepath = os.path.join(root, fname)
+                    with open(filepath, "r", encoding="utf-8") as f:
+                        content = f.read()
+                    ids = kb.add_documents(
+                        texts=[content],
+                        metadatas=[{"source": fname, "category": os.path.basename(root)}],
+                    )
+                    count += len(ids)
+    logger.info(f"Knowledge base loaded: {count} chunks")
 
 
 app = FastAPI(

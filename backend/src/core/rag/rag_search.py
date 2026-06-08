@@ -1,4 +1,5 @@
 # rag_search.py
+import copy
 import json
 import logging
 import requests
@@ -9,6 +10,15 @@ from ...core.config import get_settings
 logger = logging.getLogger(__name__)
 
 RRF_K = 60
+
+# ---------------------------------------------------------------------------
+# helpers
+# ---------------------------------------------------------------------------
+
+def _id_fn(hit: dict) -> str:
+    """Stable dedup key: parent_title_key, fallback to first 100 chars of content."""
+    entity = hit.get("entity", hit)
+    return entity.get("parent_title_key") or entity.get("content", "")[:100]
 
 
 def _dedup_by_key(hits: list[dict], id_fn: callable) -> list[dict]:
@@ -25,22 +35,21 @@ def _dedup_by_key(hits: list[dict], id_fn: callable) -> list[dict]:
 def _rrf_merge(
     hits_a: list[dict],
     hits_b: list[dict],
-    id_fn: callable = lambda h: h["entity"].get("parent_title_key", ""),
     k: int = RRF_K,
 ) -> list[dict]:
-    dedup_a = _dedup_by_key(hits_a, id_fn)
-    dedup_b = _dedup_by_key(hits_b, id_fn)
+    dedup_a = _dedup_by_key(hits_a, _id_fn)
+    dedup_b = _dedup_by_key(hits_b, _id_fn)
 
     scores: dict[str, float] = {}
     doc_map: dict[str, dict] = {}
 
     for rank, hit in enumerate(dedup_a, start=1):
-        key = id_fn(hit)
+        key = _id_fn(hit)
         scores[key] = scores.get(key, 0) + 1.0 / (k + rank)
         doc_map[key] = hit
 
     for rank, hit in enumerate(dedup_b, start=1):
-        key = id_fn(hit)
+        key = _id_fn(hit)
         scores[key] = scores.get(key, 0) + 1.0 / (k + rank)
         if key not in doc_map:
             doc_map[key] = hit
@@ -48,13 +57,17 @@ def _rrf_merge(
     sorted_keys = sorted(scores, key=scores.get, reverse=True)
     merged = []
     for key in sorted_keys:
-        hit = doc_map[key]
+        hit = copy.deepcopy(doc_map[key])
         hit["rrf_score"] = scores[key]
         merged.append(hit)
     return merged
 
 
-def search_dense(client: MilvusClient, query: str, topk: int = 10):
+# ---------------------------------------------------------------------------
+# retrieval primitives
+# ---------------------------------------------------------------------------
+
+def search_dense(client: MilvusClient, query: str, topk: int = 30):
     q_dense = _get_dense_model().encode(query).tolist()
     res = client.search(
         collection_name=COLLECTION_NAME,
@@ -67,7 +80,7 @@ def search_dense(client: MilvusClient, query: str, topk: int = 10):
     return res[0] if res else []
 
 
-def search_sparse(client: MilvusClient, query: str, topk: int = 10):
+def search_sparse(client: MilvusClient, query: str, topk: int = 30):
     res = client.search(
         collection_name=COLLECTION_NAME,
         data=[query],
@@ -79,22 +92,22 @@ def search_sparse(client: MilvusClient, query: str, topk: int = 10):
     return res[0] if res else []
 
 
-def search_hybrid(client: MilvusClient, query: str, topk: int = 10):
+def search_hybrid(client: MilvusClient, query: str, topk: int = 30) -> list[dict]:
     dense_hits = search_dense(client, query, topk)
     sparse_hits = search_sparse(client, query, topk)
     merged = _rrf_merge(dense_hits, sparse_hits)
     return merged[:topk]
 
 
-def llm_rerank(query: str, hits: list[dict], top_k: int = 10) -> list[dict]:
-    """Re-rank RRF-merged results using ZhipuAI native rerank API.
+# ---------------------------------------------------------------------------
+# LLM rerank (ZhipuAI)
+# ---------------------------------------------------------------------------
 
-    Returns re-ordered hits with added ``llm_score`` field (1.0 = best, 0.0 = worst).
-    """
+def llm_rerank(query: str, hits: list[dict], top_k: int = 30) -> list[dict]:
     candidates = hits[:top_k]
     if len(candidates) <= 1:
         for h in candidates:
-            h["llm_score"] = 1.0
+            h["llm_score"] = None
         return candidates
 
     documents = [h["entity"].get("content", "")[:2000] for h in candidates]
@@ -102,7 +115,7 @@ def llm_rerank(query: str, hits: list[dict], top_k: int = 10) -> list[dict]:
     s = get_settings()
     if not s.zhipu_api_key or not s.zhipu_rerank_url:
         for h in candidates:
-            h["llm_score"] = 1.0
+            h["llm_score"] = None
         return candidates
 
     try:
@@ -125,59 +138,85 @@ def llm_rerank(query: str, hits: list[dict], top_k: int = 10) -> list[dict]:
     except Exception as e:
         logger.warning("ZhipuAI rerank call failed: %s", e)
         for h in candidates:
-            h["llm_score"] = 1.0
+            h["llm_score"] = None
         return candidates
 
-    # response format: {"results": [{"index": 2, "relevance_score": 0.99999}, ...]}
-    # note: ZhipuAI rerank outputs scores in a very narrow range (~0.99999x).
-    # normalize to 0-1 so scores are human-readable.
     results = result.get("results", [])
-    raw_scores = [r.get("relevance_score", 0) for r in results]
-    min_s = min(raw_scores) if raw_scores else 0
-    max_s = max(raw_scores) if raw_scores else 1
-    score_range = max_s - min_s
 
     reranked = []
     n = len(candidates)
     for r in sorted(results, key=lambda x: x.get("relevance_score", 0), reverse=True):
         idx = r.get("index", 0)
         if 0 <= idx < n:
-            raw = r.get("relevance_score", 0)
-            normalized = (raw - min_s) / score_range if score_range > 0 else 0.5
-            candidates[idx]["llm_score"] = round(normalized, 4)
+            candidates[idx]["llm_score"] = r.get("relevance_score", 0)
             reranked.append(candidates[idx])
-    for i, c in enumerate(candidates):
+
+    for c in candidates:
         if c not in reranked:
-            c["llm_score"] = 0.0
+            c["llm_score"] = None
             reranked.append(c)
     return reranked
 
 
-def get_full_by_title_path(client: MilvusClient, title_path: str):
-    # Use regex pattern to match all child sections under the same parent heading
-    import re
-    # Extract section numbers like "9.4" from the title path
-    m = re.search(r"(\d+\.\d+)", title_path)
-    if m:
-        pattern = m.group(1)  # e.g. "9.4"
-        # Match all keys containing this section number
-        expr = f'parent_title_key like "%{pattern}%"'
-    else:
-        # Fallback: exact match
-        escaped = title_path.replace('"', '\\\\"')
-        expr = f'parent_title_key == "{escaped}"'
+# ---------------------------------------------------------------------------
+# unified entry point
+# ---------------------------------------------------------------------------
 
-    rows = client.query(
-        collection_name=COLLECTION_NAME,
-        filter=expr,
-        output_fields=["content", "meta_json"],
-        limit=9999,
-    )
+def rag_search(
+    client: MilvusClient,
+    query: str,
+    retrieve_k: int = 30,
+    final_k: int = 8,
+    rerank: bool = True,
+) -> list[dict]:
+    """Unified hybrid search with optional LLM rerank."""
+    hits = search_hybrid(client, query, topk=retrieve_k)
+    if rerank:
+        hits = llm_rerank(query, hits, top_k=retrieve_k)
+    return hits[:final_k]
+
+
+# ---------------------------------------------------------------------------
+# full-section retrieval by title path
+# ---------------------------------------------------------------------------
+
+def get_full_by_title_path(client: MilvusClient, title_path: str) -> str:
+    """Retrieve full content for a section using parent_title_key prefix match.
+    Uses boundary-aware matching to avoid false positives (e.g. 9.4 vs 19.4)."""
+    import re
+    m = re.search(r"(\d+(?:\.\d+)*)", title_path)
+    if m:
+        section = m.group(1)
+        # Boundary match: section followed by non-digit or end-of-string
+        expr = f'parent_title_key like "{section}%"'
+        rows = client.query(
+            collection_name=COLLECTION_NAME,
+            filter=expr,
+            output_fields=["content", "meta_json"],
+            limit=9999,
+        )
+        # Filter client-side to avoid false positives like "19.4" matching "9.4"
+        def _match(row):
+            key = json.loads(row["meta_json"]).get("parent_title_key", "")
+            parts = key.split(">")
+            return any(p == section or p.startswith(section + ".") for p in parts)
+        rows = [r for r in rows if _match(r)]
+    else:
+        escaped = title_path.replace('"', '\\"')
+        expr = f'parent_title_key == "{escaped}"'
+        rows = client.query(
+            collection_name=COLLECTION_NAME,
+            filter=expr,
+            output_fields=["content", "meta_json"],
+            limit=9999,
+        )
+
+    if not rows:
+        return ""
 
     def sort_func(x):
         m = json.loads(x["meta_json"])
         return m.get("sub_chunk", 1)
 
     rows_sort = sorted(rows, key=sort_func)
-    full_md = "\n\n".join([i["content"] for i in rows_sort])
-    return full_md
+    return "\n\n".join([i["content"] for i in rows_sort])

@@ -21,6 +21,7 @@
           />
           <div style="margin-top:12px">
             <el-button type="primary" @click="executeCode" :loading="executing">运行</el-button>
+            <el-button type="warning" v-if="error" @click="debugCode" :loading="debugging">Debug 修复</el-button>
             <el-button @click="clearOutput">清空输出</el-button>
             <el-button v-if="fromChat" type="success" @click="returnResult" :disabled="!hasResult">
               返回结果给对话
@@ -66,6 +67,7 @@ const output = ref("");
 const error = ref("");
 const images = ref([]);
 const executing = ref(false);
+const debugging = ref(false);
 const previewSrc = ref(null);
 
 const fromChat = computed(() => !!codeStore.pendingCode);
@@ -125,6 +127,24 @@ async function executeCode() {
     ElMessage.error("执行失败");
   } finally {
     executing.value = false;
+  }
+}
+
+async function debugCode() {
+  if (!code.value.trim() || !error.value.trim()) return;
+  debugging.value = true;
+  try {
+    const res = await api.post("/api/code/debug", {
+      code: code.value,
+      error: error.value,
+    });
+    code.value = res.data.fixed_code || code.value;
+    error.value = "";
+    ElMessage.success("代码已修复，请重新运行");
+  } catch (e) {
+    ElMessage.error("Debug 修复失败");
+  } finally {
+    debugging.value = false;
   }
 }
 
