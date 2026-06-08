@@ -75,7 +75,7 @@ def search_dense(client: MilvusClient, query: str, topk: int = 30):
         anns_field="dense_vec",
         limit=topk,
         search_params={"metric_type": "L2", "params": {"nprobe": 10}},
-        output_fields=["content", "meta_json", "parent_title_key"],
+        output_fields=["content", "meta_json", "parent_title_key", "doc_source"],
     )
     return res[0] if res else []
 
@@ -87,7 +87,7 @@ def search_sparse(client: MilvusClient, query: str, topk: int = 30):
         anns_field="sparse_vec",
         limit=topk,
         search_params={"metric_type": "BM25"},
-        output_fields=["content", "meta_json", "parent_title_key"],
+        output_fields=["content", "meta_json", "parent_title_key", "doc_source"],
     )
     return res[0] if res else []
 
@@ -184,11 +184,12 @@ def get_full_by_title_path(client: MilvusClient, title_path: str) -> str:
     """Retrieve full content for a section using parent_title_key prefix match.
     Uses boundary-aware matching to avoid false positives (e.g. 9.4 vs 19.4)."""
     import re
-    m = re.search(r"(\d+(?:\.\d+)*)", title_path)
-    if m:
-        section = m.group(1)
+    # Find the LAST (most specific) section number
+    numbers = re.findall(r"(\d+(?:\.\d+)*)", title_path)
+    section = numbers[-1] if numbers else None
+    if section:
         # Boundary match: section followed by non-digit or end-of-string
-        expr = f'parent_title_key like "{section}%"'
+        expr = f'parent_title_key like "%{section}%"'
         rows = client.query(
             collection_name=COLLECTION_NAME,
             filter=expr,
@@ -199,7 +200,7 @@ def get_full_by_title_path(client: MilvusClient, title_path: str) -> str:
         def _match(row):
             key = json.loads(row["meta_json"]).get("parent_title_key", "")
             parts = key.split(">")
-            return any(p == section or p.startswith(section + ".") for p in parts)
+            return any(p == section or p.startswith(section + ".") or p.startswith(section + " ") for p in parts)
         rows = [r for r in rows if _match(r)]
     else:
         escaped = title_path.replace('"', '\\"')

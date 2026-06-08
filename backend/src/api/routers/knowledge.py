@@ -37,7 +37,7 @@ async def search_knowledge(
     results = await kb.search(query, top_k)
     return {
         "results": [
-            {"content": r.content, "score": r.score, "source": r.source}
+            {"content": r.content, "score": r.score, "source": r.source, "title": r.title}
             for r in results
         ]
     }

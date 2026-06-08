@@ -39,6 +39,18 @@ export const useAuthStore = defineStore("auth", () => {
   return { user, token, isLoggedIn, login, register, fetchUser, logout };
 });
 
+export const useKnowledgeStore = defineStore("knowledge", () => {
+  const lastQuery = ref("");
+  const lastResults = ref([]);
+
+  function saveSearch(query, results) {
+    lastQuery.value = query;
+    lastResults.value = results;
+  }
+
+  return { lastQuery, lastResults, saveSearch };
+});
+
 export const useCodeStore = defineStore("code", () => {
   const pendingCode = ref("");
   const executionResult = ref(null);

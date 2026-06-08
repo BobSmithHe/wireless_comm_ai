@@ -9,10 +9,12 @@
           <template #prefix><el-icon><Search /></el-icon></template>
         </el-input>
       </el-col>
-      <el-col :span="6">
-        <el-button type="primary" @click="search" :loading="searching" style="margin-right:8px">搜索</el-button>
-        <el-upload :show-file-list="false" :http-request="handleUpload" accept=".md,.txt,.py">
-          <el-button>上传文件</el-button>
+      <el-col :span="3">
+        <el-button type="primary" @click="search" :loading="searching" style="width:100%">搜索</el-button>
+      </el-col>
+      <el-col :span="3">
+        <el-upload :show-file-list="false" :http-request="handleUpload" accept=".md,.txt,.py" style="width:100%">
+          <el-button style="width:100%" :loading="uploading">上传</el-button>
         </el-upload>
       </el-col>
     </el-row>
@@ -20,8 +22,7 @@
     <div v-if="results.length">
       <el-card v-for="(r, idx) in results" :key="idx" class="result-card">
         <div class="result-header">
-          <el-tag size="small">{{ r.source || "unknown" }}</el-tag>
-          <span class="score">相关度: {{ (r.score * 100).toFixed(1) }}%</span>
+          <el-tag size="small">{{ r.title || r.source || "unknown" }}</el-tag>
         </div>
         <div class="result-content" v-html="renderMarkdown(r.content.slice(0, 500))"></div>
       </el-card>
@@ -31,14 +32,17 @@
 </template>
 
 <script setup>
-import { ref } from "vue";
+import { ref, onMounted } from "vue";
 import { ElMessage } from "element-plus";
 import { marked } from "marked";
 import api from "../api";
+import { useKnowledgeStore } from "../store";
 
-const searchQuery = ref("");
-const results = ref([]);
+const store = useKnowledgeStore();
+const searchQuery = ref(store.lastQuery);
+const results = ref(store.lastResults);
 const searching = ref(false);
+const uploading = ref(false);
 
 function renderMarkdown(text) {
   return marked(text);
@@ -52,6 +56,7 @@ async function search() {
       params: { query: searchQuery.value, top_k: 5 },
     });
     results.value = res.data.results;
+    store.saveSearch(searchQuery.value, res.data.results);
   } catch {
     ElMessage.error("搜索失败");
   } finally {
@@ -60,6 +65,7 @@ async function search() {
 }
 
 async function handleUpload({ file }) {
+  uploading.value = true;
   const formData = new FormData();
   formData.append("file", file);
   try {
@@ -67,6 +73,8 @@ async function handleUpload({ file }) {
     ElMessage.success(`上传成功: ${res.data.chunks} 个文本块已索引`);
   } catch {
     ElMessage.error("上传失败");
+  } finally {
+    uploading.value = false;
   }
 }
 </script>

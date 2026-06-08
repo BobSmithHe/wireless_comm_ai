@@ -204,3 +204,9 @@ frontend/src/
 ```bash
 cd backend && pytest tests/ -v
 ```
+
+## 效果展示
+![img.png](img.png)
+![img_1.png](img_1.png)
+![img_2.png](img_2.png)
+![img_3.png](img_3.png)

@@ -84,8 +84,7 @@ class ChatService:
                 if name == "search_knowledge":
                     results = await self.kb.search(query, top_k=5)
                     if results:
-                        lines = ["{} (相关度 {:.0%})".format(r.source or "文档", r.score) for r in results[:5]]
-                        yield 'data: {{"event":"result","content":"找到 {} 条: {}"}}\n\n'.format(len(results), " | ".join(lines[:3]))
+                        yield 'data: {{"event":"status","content":"找到 {} 条相关知识"}}\n\n'.format(len(results))
                         tool_output = "\n\n".join(
                             f"[{r.source}] (score={r.score:.2f})\n{r.content[:1000]}"
                             for r in results
@@ -93,23 +92,23 @@ class ChatService:
                         self._save_tool(db_session, user_id, conversation_id,
                             f"RAG 知识库检索: {query}", f"检索到 {len(results)} 条")
                     else:
-                        yield f'data: {{"event":"result","content":"未找到相关知识"}}\n\n'
+                        yield f'data: {{"event":"status","content":"未找到相关知识"}}\n\n'
                         tool_output = "未找到相关知识。"
                 elif name == "search_memory":
                     try:
                         mem_results = await self.memory.search(query, user_id=user_id, top_k=5)
                         mem_results = [r for r in mem_results if r.score > 0.3]
                         if mem_results:
-                            yield f'data: {{"event":"result","content":"检索到 {len(mem_results)} 条对话记忆"}}\n\n'
+                            yield f'data: {{"event":"status","content":"检索到 {len(mem_results)} 条对话记忆"}}\n\n'
                             tool_output = "\n\n".join(f"[conversation history] {r.content[:800]}" for r in mem_results[:5])
                         else:
-                            yield f'data: {{"event":"result","content":"未找到相关对话记忆"}}\n\n'
+                            yield f'data: {{"event":"status","content":"未找到相关对话记忆"}}\n\n'
                             tool_output = "未找到相关历史对话记忆。"
                     except Exception:
-                        yield f'data: {{"event":"result","content":"记忆检索暂时不可用"}}\n\n'
+                        yield f'data: {{"event":"status","content":"记忆检索暂时不可用"}}\n\n'
                         tool_output = "记忆检索暂时不可用。"
                 elif name == "search_web":
-                    yield f'data: {{"event":"result","content":"🌐 联网搜索中..."}}\n\n'
+                    yield f'data: {{"event":"status","content":"🌐 联网搜索中..."}}\n\n'
                     try:
                         from ..core.config import get_settings
                         s = get_settings()
@@ -123,7 +122,7 @@ class ChatService:
                                     f"[Web] {r['title']}\n{r['url']}\n{r['content'][:500]}"
                                     for r in results[:5]
                                 )
-                                yield f'data: {{"event":"result","content":"找到 {len(results)} 条网页"}}\n\n'
+                                yield f'data: {{"event":"status","content":"找到 {len(results)} 条网页"}}\n\n'
                             else:
                                 tool_output = "未找到相关网页。"
                         else:

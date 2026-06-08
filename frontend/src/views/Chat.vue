@@ -136,12 +136,19 @@ function escapeHtml(t) { return t.replace(/&/g,"&amp;").replace(/</g,"&lt;").rep
 function renderMarkdown(text, withKatex) {
   text = text.replace(/\t/g, '    ');
   if (withKatex) {
+    // First: handle display math $$ and \[ \] and [ ]
     text = text.replace(/\$\$([\s\S]*?)\$\$/g, (_,f) => { try { return katex.renderToString(f.trim(),{displayMode:true,throwOnError:false}); } catch { return '<pre>'+escapeHtml(f)+'</pre>'; }});
     text = text.replace(/\\\[([\s\S]*?)\\\]/g, (_,f) => { try { return katex.renderToString(f.trim(),{displayMode:true,throwOnError:false}); } catch { return '<pre>'+escapeHtml(f)+'</pre>'; }});
-    text = text.replace(/(?<!\$)\$(?!\$)([^$]+?)\$(?!\$)/g, (_,f) => { try { return katex.renderToString(f.trim(),{displayMode:false,throwOnError:false}); } catch { return escapeHtml(f); }});
     text = text.replace(/\\\(([\s\S]*?)\\\)/g, (_,f) => { try { return katex.renderToString(f.trim(),{displayMode:false,throwOnError:false}); } catch { return escapeHtml(f); }});
+    // Inline $...$: only replace if dollar count is even AND content looks like math
+    text = text.replace(/(?<!\$)\$(?!\$)([^$]+?)\$(?!\$)/g, (_,f) => {
+      if (/[\\^_{}]/.test(f)) {
+        try { return katex.renderToString(f.trim(),{displayMode:false,throwOnError:false}); } catch { return escapeHtml(f); }
+      }
+      return '$'+f+'$';
+    });
   }
-  var html = marked.parse(text);
+  var html = marked.parse(text, { breaks: true, gfm: true });
   var re = new RegExp('<pre><code( class="language-(\\w+)")?>([\\s\\S]*?)</code></pre>', 'g');
   html = html.replace(re, function(_, cls, lang, code) {
     var ln = lang || "text";
@@ -222,7 +229,7 @@ async function sendMessage() {
           } else if (data.event === "answer") {
             fullAnswer += data.content;
             if (!assistantMsg) assistantMsg = addLocalMessage("assistant", "");
-            assistantMsg._html = renderMarkdown(fullAnswer, false);
+            assistantMsg._html = renderHtml(fullAnswer, assistantMsg._key);
             assistantMsg.content = fullAnswer;
             messages.value = [...messages.value];
             touched = true;

@@ -3,7 +3,6 @@
     <h2>代码编辑器</h2>
     <p style="margin-bottom:12px;color:#666">
       在线编写、执行和调试 Python 无线通信仿真代码
-      <span v-if="fromChat" style="color:#409eff">（代码来自对话）</span>
     </p>
 
     <el-row :gutter="16">
@@ -23,9 +22,6 @@
             <el-button type="primary" @click="executeCode" :loading="executing">运行</el-button>
             <el-button type="warning" v-if="error" @click="debugCode" :loading="debugging">Debug 修复</el-button>
             <el-button @click="clearOutput">清空输出</el-button>
-            <el-button v-if="fromChat" type="success" @click="returnResult" :disabled="!hasResult">
-              返回结果给对话
-            </el-button>
           </div>
         </el-card>
       </el-col>
@@ -52,7 +48,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from "vue";
+import { ref, computed, onMounted, watch } from "vue";
 import { useRouter, useRoute } from "vue-router";
 import { ElMessage } from "element-plus";
 import api from "../api";
@@ -61,8 +57,7 @@ import { useCodeStore } from "../store";
 const router = useRouter();
 const route = useRoute();
 const codeStore = useCodeStore();
-
-const code = ref("");
+const code = ref(codeStore.pendingCode || "");
 const output = ref("");
 const error = ref("");
 const images = ref([]);
@@ -70,8 +65,6 @@ const executing = ref(false);
 const debugging = ref(false);
 const previewSrc = ref(null);
 
-const fromChat = computed(() => !!codeStore.pendingCode);
-const hasResult = computed(() => !!(output.value || error.value || images.value.length));
 
 const defaultCode = `import numpy as np
 import matplotlib.pyplot as plt
@@ -96,9 +89,6 @@ onMounted(async () => {
   const routeCode = route.query.code;
   if (routeCode) {
     code.value = routeCode;
-  } else if (codeStore.pendingCode) {
-    code.value = codeStore.pendingCode;
-    await executeCode();
   } else {
     code.value = defaultCode;
   }
@@ -148,21 +138,14 @@ async function debugCode() {
   }
 }
 
+watch(code, (val) => codeStore.setCode(val));
+
 function clearOutput() {
   output.value = "";
   error.value = "";
   images.value = [];
 }
 
-function returnResult() {
-  codeStore.setResult({
-    stdout: output.value,
-    stderr: error.value,
-    images: images.value,
-  });
-  ElMessage.success("结果已返回，请切换回对话页面");
-  router.push("/chat");
-}
 </script>
 
 <style scoped>

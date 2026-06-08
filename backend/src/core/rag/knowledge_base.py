@@ -20,6 +20,7 @@ class RetrievedDoc:
     content: str
     score: float
     source: str = ""
+    title: str = ""
     chunk_index: int = 0
 
 
@@ -107,7 +108,7 @@ class KnowledgeBase:
         if stats["row_count"] == 0:
             return []
 
-        n_candidates = max(top_k * 6, 30)
+        n_candidates = max(top_k * 10, 50)
 
         if mode == "vector":
             hits = search_dense(client, query, topk=top_k)
@@ -117,10 +118,7 @@ class KnowledgeBase:
             hits = search_hybrid(client, query, topk=n_candidates)
             if rerank and len(hits) > top_k:
                 hits = llm_rerank(query, hits, min(len(hits), n_candidates))
-            hits = hits[:top_k]
-
         expanded: list[RetrievedDoc] = []
-        seen_titles: set[str] = set()
         for h in hits:
             entity = h.get("entity", h)
             title_key = entity.get("parent_title_key", "")
@@ -131,18 +129,21 @@ class KnowledgeBase:
             if not title_key:
                 if content:
                     expanded.append(RetrievedDoc(content=content, score=round(score, 4), source=doc_source))
+                if len(expanded) >= top_k: break
                 continue
-
-            if title_key in seen_titles:
-                continue
-            seen_titles.add(title_key)
 
             full_text = get_full_by_title_path(client, title_key)
+            if not full_text:
+                continue
+
             expanded.append(RetrievedDoc(
                 content=full_text,
                 score=round(score, 4) if isinstance(score, (int, float)) else 0.6,
                 source=doc_source,
+                title=title_key.split(">")[-1] if title_key else "",
             ))
+            if len(expanded) >= top_k:
+                break
 
         return expanded
 
