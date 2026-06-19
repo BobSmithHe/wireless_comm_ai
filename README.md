@@ -1,6 +1,7 @@
 # WirelessComm AI
 
-面向无线通信工程师和研究人员的 AI 助手系统。支持 RAG 知识库检索、对话记忆、联网搜索、代码执行。
+面向无线通信工程师和
+研究人员的 AI 助手系统。支持 RAG 知识库检索、对话记忆、联网搜索、代码执行。
 
 ---
 
@@ -206,7 +207,8 @@ cd backend && pytest tests/ -v
 ```
 
 ## 效果展示
-![img.png](img.png)
-![img_1.png](img_1.png)
-![img_2.png](img_2.png)
-![img_3.png](img_3.png)
+![](img/img_0.png)
+![](img/img_1.png)
+![](img/img_2.png)
+![](img/img_3.png)
+![](img/img_4.png)
