@@ -1,7 +1,6 @@
 # WirelessComm AI
 
-面向无线通信工程师和
-研究人员的 AI 助手系统。支持 RAG 知识库检索、对话记忆、联网搜索、代码执行。
+面向无线通信工程师和研究人员的 AI 助手系统。支持 RAG 知识库检索、长期记忆图谱、对话记忆、联网搜索、代码执行。
 
 ---
 
@@ -16,9 +15,10 @@ Vue 3 Frontend (5173)  ──REST/SSE──  FastAPI Backend (8765)
            (agent loop + SSE)        (OpenAI-compat)        (Docker sandbox)
                     │                                             │
                     ├── KnowledgeBase ── Milvus (hybrid RAG)
+                    ├── MemoryGraph ──── MySQL (user facts / preferences)
                     ├── ConvMemory ───── Milvus (384-dim)
                     ├── WebSearch ────── Tavily API
-                    └── MySQL ────────── users / conversations / messages
+                    └── MySQL ────────── users / conversations / messages / memory graph
 ```
 
 ---
@@ -82,9 +82,12 @@ docker build -t wcai-sandbox ./sandbox
 
 ### 记忆系统
 
+- MySQL 轻量记忆图谱，按 `user_id` 持久化用户事实、偏好、项目背景和长期指令
+- 显式记忆消息（如“记住/偏好/以后/希望”）立即触发后台抽取；普通对话按固定轮数后台抽取
+- 记忆图谱跨会话检索，并在新对话中注入 system context
 - 10 条消息触发压缩，前 N-5 条归档 Milvus，LLM 摘要注入上下文
 - 后 5 条保留原文
-- 记忆检索跨对话，user_id 隔离
+- 对话向量记忆跨对话检索，user_id 隔离
 - all-MiniLM-L6-v2 (384维)
 
 ### 联网搜索
@@ -140,6 +143,16 @@ GET  /api/knowledge/search?query=&top_k=      混合检索
 POST /api/knowledge/upload                      上传文档 (multipart)
 ```
 
+### 记忆图谱
+
+```
+GET    /api/memory-graph                 查看当前用户记忆图谱
+POST   /api/memory-graph/edges           手动添加记忆边
+DELETE /api/memory-graph/edges/{edge_id} 删除记忆边
+DELETE /api/memory-graph/nodes/{node_id} 删除记忆节点
+DELETE /api/memory-graph                 清空当前用户记忆图谱
+```
+
 ### 代码
 
 ```
@@ -167,9 +180,11 @@ POST /api/papers/{id}/chat  论文问答
 | `DEEPSEEK_MODEL` | 模型 (deepseek-chat / deepseek-v4-flash) |
 | `TAVILY_API_KEY` | Tavily 联网搜索 (可选) |
 | `MILVUS_URI` | Milvus 地址 |
+| `MILVUS_DB_NAME` | Milvus 数据库名，默认 `milvus_database` |
 | `EMBEDDING_MODEL` | 嵌入模型 (BAAI/bge-large-zh-v1.5) |
 | `SANDBOX_MODE` | docker / subprocess |
 | `CONTEXT_COMPRESSION_TRIGGER_ROUNDS` | 压缩触发消息数 (默认10) |
+| `MEMORY_GRAPH_EXTRACT_INTERVAL_ROUNDS` | 普通对话后台抽取记忆的轮数间隔 (默认2) |
 
 ---
 
@@ -177,7 +192,7 @@ POST /api/papers/{id}/chat  论文问答
 
 ```
 backend/src/
-├── api/routers/      路由层 (auth, chat, code, knowledge, conversation, papers)
+├── api/routers/      路由层 (auth, chat, code, knowledge, conversation, papers, memory_graph)
 ├── api/deps.py       依赖注入
 ├── core/
 │   ├── config.py     配置+数据库+安全
@@ -186,8 +201,8 @@ backend/src/
 │   ├── context/      对话压缩+记忆存储
 │   ├── rag/          Milvus 知识库+混合检索
 │   └── observability/ Langfuse 追踪
-├── services/         业务逻辑层 (chat, code, auth)
-├── models/           SQLAlchemy 模型
+├── services/         业务逻辑层 (chat, code, auth, memory_graph)
+├── database/         SQLAlchemy Base + models
 └── main.py           FastAPI 入口
 
 frontend/src/
