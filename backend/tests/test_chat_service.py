@@ -25,7 +25,8 @@ class TestChatService:
         async for line in svc.chat_sse(user_id=1, message="Hello", conversation_id=1, history=[]):
             lines.append(line)
         assert len(lines) > 0
-        assert any("done" in l for l in lines)
+        assert any('"event":"answer"' in l for l in lines)
+        assert not any('"event":"done"' in l for l in lines)
 
     @pytest.mark.asyncio
     async def test_chat_sse_compresses_long_history(self, svc, mock_llm):

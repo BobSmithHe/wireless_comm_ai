@@ -1,13 +1,13 @@
 """Application configuration — settings, database, security."""
 from functools import lru_cache
 from datetime import datetime, timedelta, timezone
+from pydantic import field_validator
 from pydantic_settings import BaseSettings
 from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker, declarative_base
+from sqlalchemy.orm import sessionmaker
 from jose import jwt, JWTError
 import bcrypt
 
-Base = declarative_base()
 engine = None
 SessionLocal = None
 
@@ -88,6 +88,7 @@ class Settings(BaseSettings):
     context_compression_trigger_rounds: int = 10
     context_compression_keep_rounds: int = 5
     context_compression_summary_max_tokens: int = 500
+    memory_graph_extract_interval_rounds: int = 2
 
     @property
     def database_url(self) -> str:
@@ -96,6 +97,11 @@ class Settings(BaseSettings):
     @property
     def database_url_async(self) -> str:
         return f"mysql+aiomysql://{self.db_user}:{self.db_password}@{self.db_host}:{self.db_port}/{self.db_name}"
+
+    @field_validator("milvus_db_name", mode="before")
+    @classmethod
+    def default_milvus_db_name(cls, value):
+        return "milvus_database" if value in (None, "") else value
 
     class Config:
         env_file = ".env"

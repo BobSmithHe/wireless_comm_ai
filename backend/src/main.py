@@ -3,7 +3,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from .core.config import get_settings
 from .utils.logger import logger
-from .api.routers import auth, chat, code, knowledge, conversation, papers
+from .api.routers import auth, chat, code, knowledge, conversation, papers, memory_graph
 
 settings = get_settings()
 
@@ -17,8 +17,9 @@ async def lifespan(app: FastAPI):
     init_langfuse()
 
     # Auto-create database tables
-    from .core.config import engine, Base
-    from .database.models import User, Conversation, Knowledge, Paper, PaperMessage, Project  # noqa: F811
+    from .core.config import engine
+    from .database.base import Base
+    from .database import models  # noqa: F401
     Base.metadata.create_all(bind=engine)
     logger.info("Database tables verified")
 
@@ -78,6 +79,7 @@ app.include_router(code.router)
 app.include_router(knowledge.router)
 app.include_router(conversation.router)
 app.include_router(papers.router)
+app.include_router(memory_graph.router)
 
 
 @app.get("/health")

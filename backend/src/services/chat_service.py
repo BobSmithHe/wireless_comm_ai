@@ -8,13 +8,23 @@ from ..core.context import ContextCompressor, ConversationMemory
 from ..core.observability import observe, update_current_span
 from ..core.config import get_settings
 from ..database.models import Message
+from ..services.memory_graph_service import MemoryGraphService
+from ..utils.logger import logger
 
 class ChatService:
-    def __init__(self, llm, knowledge_base, code_executor, conversation_memory=None):
+    def __init__(
+        self,
+        llm,
+        knowledge_base,
+        code_executor,
+        conversation_memory=None,
+        memory_graph: MemoryGraphService | None = None,
+    ):
         self.llm = llm
         self.kb = knowledge_base
         self.code_exec = code_executor
         self.memory = conversation_memory
+        self.memory_graph = memory_graph
 
         settings = get_settings()
         if settings.context_compression_enabled:
@@ -41,7 +51,8 @@ class ChatService:
         if to_archive is None:
             return history, None
 
-        self.memory.index_history(to_archive, user_id, conversation_id)
+        if self.memory:
+            self.memory.index_history(to_archive, user_id, conversation_id)
         result = await self.compressor.compress(to_archive)
         summary = result.summary if result.was_compressed else self.compressor.fallback_summary(to_archive)
 
@@ -56,11 +67,14 @@ class ChatService:
         """SSE streaming with optional tool calling."""
         compressed_history, comp_meta = await self._compress_history(history, user_id, conversation_id)
         messages = compressed_history + [{"role": "user", "content": message}]
+        graph_context = self._build_memory_graph_context(db_session, user_id, message)
+        if graph_context:
+            messages = [{"role": "system", "content": graph_context}] + messages
         if system_context:
             messages = [{"role": "system", "content": system_context}] + messages
 
-        # Build tools: memory always on, knowledge + web are optional
-        tools = [t for t in RAG_TOOLS if t["function"]["name"] == "search_memory"]
+        # Build tools: conversation vector memory requires Milvus; graph memory is injected separately.
+        tools = [t for t in RAG_TOOLS if t["function"]["name"] == "search_memory"] if self.memory else []
         if use_rag:
             tools.append([t for t in RAG_TOOLS if t["function"]["name"] == "search_knowledge"][0])
         if use_web:
@@ -150,8 +164,6 @@ class ChatService:
             full += clean
             yield f'data: {{"event":"answer","content":{json.dumps(clean)}}}\n\n'
 
-        yield 'data: {"event":"done"}\n\n'
-
     def _save_tool(self, db_session, user_id, conv_id, tool_call, tool_result):
         if not db_session or not conv_id:
             return
@@ -160,3 +172,34 @@ class ChatService:
             db_session.add(Message(user_id=user_id, conversation_id=conv_id, role="tool_result", content=tool_result))
         except Exception:
             pass
+
+    def _build_memory_graph_context(self, db_session, user_id: int, message: str) -> str:
+        if not self.memory_graph or not db_session:
+            return ""
+        try:
+            return self.memory_graph.build_context(db_session, user_id, message)
+        except Exception as exc:
+            logger.warning(f"Memory graph retrieval failed: {exc}")
+            return ""
+
+    async def remember_exchange(
+        self,
+        db_session,
+        user_id: int,
+        user_message: str,
+        assistant_message: str,
+        source_message_id: int | None = None,
+    ) -> int:
+        if not self.memory_graph or not db_session or not assistant_message:
+            return 0
+        try:
+            return await self.memory_graph.extract_and_store(
+                db=db_session,
+                user_id=user_id,
+                user_message=user_message,
+                assistant_message=assistant_message,
+                source_message_id=source_message_id,
+            )
+        except Exception as exc:
+            logger.warning(f"Memory graph storage failed: {exc}")
+            return 0

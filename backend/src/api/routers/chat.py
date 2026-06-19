@@ -1,19 +1,22 @@
 import json
+import asyncio
 
 from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
-from ...core.config import get_db
+from ...core.config import SessionLocal, get_db, get_settings
 from ...database.models import Conversation, Message
 from ...services.chat_service import ChatService
 from ...core.observability import trace_attributes
 from ...cache.redis_client import get_redis
+from ...utils.logger import logger
 from ..deps import get_current_user, get_chat_service
 
 router = APIRouter(prefix="/api", tags=["chat"])
 
 CACHE_TTL = 1800
+MEMORY_MARKERS = ("记住", "请记住", "以后", "偏好", "希望")
 
 
 async def _update_redis_cache(conv_id: int, user_id: int, db: Session):
@@ -55,8 +58,55 @@ def _get_history(db: Session, conv_id: int) -> list[dict]:
     ]
 
 
-def _save_msg(db: Session, user_id: int, conv_id: int, role: str, content: str) -> None:
-    db.add(Message(user_id=user_id, conversation_id=conv_id, role=role, content=content))
+def _save_msg(db: Session, user_id: int, conv_id: int, role: str, content: str) -> Message:
+    msg = Message(user_id=user_id, conversation_id=conv_id, role=role, content=content)
+    db.add(msg)
+    return msg
+
+
+def _count_assistant_rounds(db: Session, user_id: int, conv_id: int) -> int:
+    return (
+        db.query(Message)
+        .filter(
+            Message.user_id == user_id,
+            Message.conversation_id == conv_id,
+            Message.role == "assistant",
+        )
+        .count()
+    )
+
+
+def _should_schedule_memory(user_message: str, assistant_rounds: int) -> bool:
+    if any(marker in user_message for marker in MEMORY_MARKERS):
+        return True
+    interval = max(0, get_settings().memory_graph_extract_interval_rounds)
+    return interval > 0 and assistant_rounds > 0 and assistant_rounds % interval == 0
+
+
+async def _remember_exchange_background(
+    chat_service: ChatService,
+    user_id: int,
+    user_message: str,
+    assistant_message: str,
+    source_message_id: int,
+) -> None:
+    db = SessionLocal()
+    try:
+        stored = await chat_service.remember_exchange(
+            db,
+            user_id=user_id,
+            user_message=user_message,
+            assistant_message=assistant_message,
+            source_message_id=source_message_id,
+        )
+        logger.info(
+            f"Background memory graph extraction stored {stored} edges "
+            f"for user={user_id} message={source_message_id}"
+        )
+    except Exception as exc:
+        logger.warning(f"Background memory graph extraction failed: {exc}")
+    finally:
+        db.close()
 
 
 def _get_or_create_conv(db: Session, user_id: int, conv_id: int | None) -> Conversation:
@@ -106,6 +156,7 @@ async def chat_stream(
                 db_session=db,
                 use_rag=req.use_rag,
                 use_web=req.use_web,
+                system_context=req.system_context,
             ):
                 yield line
                 if '"event":"answer"' in line:
@@ -117,8 +168,21 @@ async def chat_stream(
                         pass
 
             if full_response:
-                _save_msg(db, user_id, conv_id, "assistant", full_response)
-            db.commit()
+                assistant_msg = _save_msg(db, user_id, conv_id, "assistant", full_response)
+                db.commit()
+                db.refresh(assistant_msg)
+                assistant_rounds = _count_assistant_rounds(db, user_id, conv_id)
+                if _should_schedule_memory(req.message, assistant_rounds):
+                    asyncio.create_task(_remember_exchange_background(
+                        chat_service=chat_service,
+                        user_id=user_id,
+                        user_message=req.message,
+                        assistant_message=full_response,
+                        source_message_id=assistant_msg.id,
+                    ))
+            else:
+                db.commit()
             await _update_redis_cache(conv_id, user_id, db)
+            yield 'data: {"event":"done"}\n\n'
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")

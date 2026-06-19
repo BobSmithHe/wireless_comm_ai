@@ -1,6 +1,7 @@
 from datetime import datetime
 from sqlalchemy import (
     Column, Integer, String, Text, DateTime, ForeignKey, Float, JSON, Boolean, Index,
+    UniqueConstraint,
 )
 from sqlalchemy.orm import relationship
 from .base import Base
@@ -63,6 +64,73 @@ class Memory(Base):
     metadata_ = Column("metadata", JSON, default=dict)
     score = Column(Float, default=0.0)
     created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class MemoryNode(Base):
+    __tablename__ = "memory_nodes"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    type = Column(String(50), nullable=False, index=True)
+    name = Column(String(255), nullable=False)
+    normalized_name = Column(String(255), nullable=False)
+    properties = Column(JSON, default=dict)
+    confidence = Column(Float, default=0.7)
+    is_active = Column(Boolean, default=True, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    outgoing_edges = relationship(
+        "MemoryEdge",
+        foreign_keys="MemoryEdge.source_node_id",
+        back_populates="source_node",
+    )
+    incoming_edges = relationship(
+        "MemoryEdge",
+        foreign_keys="MemoryEdge.target_node_id",
+        back_populates="target_node",
+    )
+
+    __table_args__ = (
+        UniqueConstraint("user_id", "type", "normalized_name", name="uq_memory_node_user_type_name"),
+        Index("ix_memory_nodes_user_active_type", "user_id", "is_active", "type"),
+    )
+
+
+class MemoryEdge(Base):
+    __tablename__ = "memory_edges"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    source_node_id = Column(Integer, ForeignKey("memory_nodes.id"), nullable=False, index=True)
+    relation = Column(String(80), nullable=False, index=True)
+    target_node_id = Column(Integer, ForeignKey("memory_nodes.id"), nullable=False, index=True)
+    properties = Column(JSON, default=dict)
+    confidence = Column(Float, default=0.7)
+    source_message_id = Column(Integer, ForeignKey("messages.id"), nullable=True)
+    is_active = Column(Boolean, default=True, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    last_used_at = Column(DateTime)
+
+    source_node = relationship(
+        "MemoryNode",
+        foreign_keys=[source_node_id],
+        back_populates="outgoing_edges",
+    )
+    target_node = relationship(
+        "MemoryNode",
+        foreign_keys=[target_node_id],
+        back_populates="incoming_edges",
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id", "source_node_id", "relation", "target_node_id",
+            name="uq_memory_edge_user_triple",
+        ),
+        Index("ix_memory_edges_user_active_updated", "user_id", "is_active", "updated_at"),
+    )
 
 
 class Knowledge(Base):

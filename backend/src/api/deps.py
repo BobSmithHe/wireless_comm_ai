@@ -13,7 +13,9 @@ from ..core.code.debugger import CodeDebugger
 from ..services.auth_service import AuthService
 from ..services.chat_service import ChatService
 from ..services.code_service import CodeService
+from ..services.memory_graph_service import MemoryGraphService
 from ..cache.cache_manager import CacheManager
+from ..utils.logger import logger
 
 security = HTTPBearer()
 
@@ -31,6 +33,7 @@ _code_debug: CodeDebugger | None = None
 _auth_svc: AuthService | None = None
 _chat_svc: ChatService | None = None
 _code_svc: CodeService | None = None
+_memory_graph_svc: MemoryGraphService | None = None
 _cache: CacheManager | None = None
 
 
@@ -56,14 +59,18 @@ def get_kb() -> KnowledgeBase:
     return _kb
 
 
-def get_conversation_memory() -> ConversationMemory:
+def get_conversation_memory() -> ConversationMemory | None:
     global _memory
     if _memory is None:
-        _memory = ConversationMemory(
-            milvus_uri=_settings.milvus_uri,
-            milvus_token=_settings.milvus_token or None,
-            milvus_db_name=_settings.milvus_db_name,
-        )
+        try:
+            _memory = ConversationMemory(
+                milvus_uri=_settings.milvus_uri,
+                milvus_token=_settings.milvus_token or None,
+                milvus_db_name=_settings.milvus_db_name,
+            )
+        except Exception as exc:
+            logger.warning(f"Conversation memory disabled: {exc}")
+            return None
     return _memory
 
 
@@ -98,8 +105,21 @@ def get_auth_service() -> AuthService:
 def get_chat_service() -> ChatService:
     global _chat_svc
     if _chat_svc is None:
-        _chat_svc = ChatService(get_llm(), get_kb(), get_code_executor(), get_conversation_memory())
+        _chat_svc = ChatService(
+            get_llm(),
+            get_kb(),
+            get_code_executor(),
+            get_conversation_memory(),
+            get_memory_graph_service(),
+        )
     return _chat_svc
+
+
+def get_memory_graph_service() -> MemoryGraphService:
+    global _memory_graph_svc
+    if _memory_graph_svc is None:
+        _memory_graph_svc = MemoryGraphService(get_llm())
+    return _memory_graph_svc
 
 
 def get_code_service() -> CodeService:
